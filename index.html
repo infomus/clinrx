@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ClinRx — Building the next generation of Canadian pharmacy infrastructure</title>
+    <title>ClinRx — Quietly building for Canadian pharmacy</title>
     <meta
       name="description"
-      content="ClinRx is building intelligent, care-first software for Canadian pharmacy — helping pharmacists deliver care with greater confidence, accuracy, and efficiency."
+      content="ClinRx is building care-first software for Canadian pharmacy. Precise, intelligent, and made for the people behind the counter."
     />
-    <meta name="theme-color" content="#0a0b4f" />
+    <meta name="theme-color" content="#f7f4ef" />
 
     <meta property="og:type" content="website" />
     <meta property="og:title" content="ClinRx" />
     <meta
       property="og:description"
-      content="Building intelligent, care-first software for Canadian pharmacy."
+      content="Quietly building the next layer of Canadian pharmacy care."
     />
     <meta property="og:url" content="https://infomus.github.io/clinrx/" />
     <meta property="og:image" content="https://infomus.github.io/clinrx/assets/og-image.png" />
@@ -23,7 +23,7 @@
     <meta name="twitter:title" content="ClinRx" />
     <meta
       name="twitter:description"
-      content="Building intelligent, care-first software for Canadian pharmacy."
+      content="Quietly building the next layer of Canadian pharmacy care."
     />
     <meta name="twitter:image" content="https://infomus.github.io/clinrx/assets/og-image.png" />
 
@@ -32,19 +32,12 @@
     <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
     <link rel="manifest" href="site.webmanifest" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="page-shell">
-      <div class="ambient ambient-1"></div>
-      <div class="ambient ambient-2"></div>
-      <div class="grid"></div>
+    <div class="cursor-glow" aria-hidden="true"></div>
+    <div class="page-shell" data-parallax>
+      <div class="soft-field" aria-hidden="true"></div>
 
       <header class="topbar">
         <a class="brand" href="#top" aria-label="ClinRx home">
@@ -56,48 +49,70 @@
         <span class="status-pill">Launching soon</span>
       </header>
 
-      <main class="hero" id="top">
-        <section class="hero-copy">
-          <p class="eyebrow">Quietly building for Canadian pharmacy</p>
-          <h1>Better pharmacy infrastructure is coming.</h1>
+      <main class="hero" id="top" aria-labelledby="hero-title">
+        <section class="hero-copy" aria-label="ClinRx introduction">
+          <p class="eyebrow">Canadian pharmacy, carefully reimagined</p>
+          <h1 id="hero-title">The next layer of care is taking shape.</h1>
           <p class="lede">
-            ClinRx is building intelligent, care-first software for Canadian pharmacists — designed to make care more
-            confident, precise, and efficient.
+            ClinRx is building precise, care-first software for pharmacists who want better signals, calmer workflows,
+            and more room for judgment.
           </p>
 
           <p class="sublede">
-            We’re a team of engineers, pharmacists, and regulators from leading Canadian academic and corporate
-            institutions.
+            Built by engineers, pharmacists, and regulators from leading Canadian academic and corporate institutions.
           </p>
 
           <div class="hero-actions">
             <a class="button button-primary" href="mailto:team@clinrx.ca">team@clinrx.ca</a>
-            <a class="button button-secondary is-disabled" href="#" aria-disabled="true">LinkedIn soon</a>
+            <a class="button button-secondary is-disabled" href="#" aria-disabled="true" tabindex="-1">LinkedIn soon</a>
           </div>
         </section>
 
-        <aside class="hero-panel" aria-label="ClinRx overview">
-          <div class="glass-card logo-card compact-logo-card">
-            <div class="logo-halo"></div>
-            <img src="assets/clinrx-logo-full.png" alt="ClinRx logo" class="hero-logo" />
+        <aside class="hero-visual" aria-label="ClinRx focus">
+          <div class="signal-visual" aria-hidden="true">
+            <span class="signal-orbit orbit-one"></span>
+            <span class="signal-orbit orbit-two"></span>
+            <span class="signal-node node-one"></span>
+            <span class="signal-node node-two"></span>
+            <span class="signal-node node-three"></span>
+            <span class="signal-line line-one"></span>
+            <span class="signal-line line-two"></span>
           </div>
 
-          <div class="glass-card compact-card" id="contact">
-            <div class="compact-row">
-              <span class="label">Who we’re looking for</span>
-              <p>Tech-forward pharmacies, students, professors, researchers, and practitioners.</p>
-            </div>
-            <div class="compact-row compact-footer">
-              <span>Launching soon</span>
-              <span>© <span id="year"></span> ClinRx</span>
-            </div>
+          <div class="focus-card" id="contact">
+            <span class="label">Looking for</span>
+            <p>Tech-forward pharmacies, students, professors, researchers, and practitioners.</p>
           </div>
         </aside>
       </main>
+
+      <footer class="footer">
+        <span>Launching soon</span>
+        <span>© <span id="year"></span> ClinRx</span>
+      </footer>
     </div>
 
     <script>
       document.getElementById('year').textContent = new Date().getFullYear();
+
+      const root = document.documentElement;
+      const glow = document.querySelector('.cursor-glow');
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+      if (glow && !reduceMotion.matches) {
+        window.addEventListener(
+          'pointermove',
+          (event) => {
+            const x = event.clientX;
+            const y = event.clientY;
+            root.style.setProperty('--cursor-x', `${x}px`);
+            root.style.setProperty('--cursor-y', `${y}px`);
+            root.style.setProperty('--parallax-x', `${(x / window.innerWidth - 0.5).toFixed(3)}`);
+            root.style.setProperty('--parallax-y', `${(y / window.innerHeight - 0.5).toFixed(3)}`);
+          },
+          { passive: true }
+        );
+      }
     </script>
   </body>
 </html>
