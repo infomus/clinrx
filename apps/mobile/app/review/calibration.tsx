@@ -79,9 +79,16 @@ function CalibrationReviewContent() {
     () => mergeCalibrationReviews(savedReviews, reviewsByCandidateId, reviewerId),
     [reviewsByCandidateId, reviewerId, savedReviews],
   );
+  const metricReviews = useMemo(
+    () =>
+      reviewerId
+        ? mergedReviews.filter((review) => review.reviewerId === reviewerId)
+        : mergedReviews,
+    [mergedReviews, reviewerId],
+  );
   const metrics = useMemo(
-    () => calculateMetrics(candidates, mergedReviews),
-    [candidates, mergedReviews],
+    () => calculateMetrics(candidates, metricReviews, savedReviews.length),
+    [candidates, metricReviews, savedReviews.length],
   );
 
   useEffect(() => {
@@ -484,6 +491,7 @@ interface CalibrationMetrics {
 function calculateMetrics(
   candidates: PubMedInteractionCandidate[],
   reviews: PubMedCalibrationReview[],
+  savedReviewRows: number,
 ): CalibrationMetrics {
   const candidateById = new Map(
     candidates.map((candidate) => [candidate.id, candidate]),
@@ -551,7 +559,7 @@ function calculateMetrics(
         ).length / resolutionAssessments.length
       : 0,
     reviewed: decisionReviews.length,
-    reviewerRows: reviews.length,
+    reviewerRows: savedReviewRows,
     severityManagementAcceptableRate: severityManagementAssessments.length
       ? severityManagementAssessments.filter(
           (review) => review.severityManagementAssessment === "acceptable",
