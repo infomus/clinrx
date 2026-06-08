@@ -44,6 +44,67 @@ export type PubMedAiReviewVerdict =
   | "needs_human_review"
   | "likely_reject";
 
+export type PubMedCalibrationInteractionAssessment =
+  | "real"
+  | "not_interaction"
+  | "unclear";
+
+export type PubMedCalibrationDrugPairAssessment =
+  | "correct"
+  | "partially_correct"
+  | "wrong_pair"
+  | "unclear";
+
+export type PubMedCalibrationResolutionAssessment =
+  | "correct"
+  | "wrong_level"
+  | "wrong_node"
+  | "unresolved_unclear";
+
+export type PubMedCalibrationSeverityManagementAssessment =
+  | "acceptable"
+  | "needs_revision"
+  | "wrong"
+  | "not_assessed";
+
+export type PubMedCalibrationDecision =
+  | "follow_up"
+  | "publishable"
+  | "reject";
+
+export type PubMedCalibrationTimeBucket = "fast" | "medium" | "slow";
+
+export type PubMedCalibrationMissingContext =
+  | "cps_comparison"
+  | "full_article"
+  | "medeffect_safety"
+  | "nhp_data"
+  | "noc_context"
+  | "route_form"
+  | "severity_management";
+
+export interface PubMedCalibrationReview {
+  id: string;
+  setId: string;
+  candidateId: string;
+  reviewerId: string;
+  interactionAssessment?: PubMedCalibrationInteractionAssessment | null;
+  drugPairAssessment?: PubMedCalibrationDrugPairAssessment | null;
+  resolutionAssessment?: PubMedCalibrationResolutionAssessment | null;
+  severityManagementAssessment?: PubMedCalibrationSeverityManagementAssessment | null;
+  decision?: PubMedCalibrationDecision | null;
+  missingContext: PubMedCalibrationMissingContext[];
+  timeBucket?: PubMedCalibrationTimeBucket | null;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PubMedCalibrationReviewInput = Omit<
+  PubMedCalibrationReview,
+  "createdAt" | "id" | "updatedAt"
+>;
+
 export interface PubMedAiReview {
   concerns: string[];
   entityResolutionNotes?: string | null;

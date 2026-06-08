@@ -6,6 +6,8 @@ import type {
   HealthCanadaMonographProductExample,
   PubMedAiReview,
   PubMedAiReviewVerdict,
+  PubMedCalibrationReview,
+  PubMedCalibrationReviewInput,
   PubMedInteractionCandidate,
   PubMedRejectionReason,
 } from "@clinrx/types";
@@ -74,6 +76,23 @@ interface HealthCanadaMonographCoverageRow {
   section_counts: unknown;
   total_chunk_count: number;
   total_product_count: number;
+}
+
+interface PubMedCalibrationReviewRow {
+  candidate_id: string;
+  created_at: string;
+  decision: PubMedCalibrationReview["decision"];
+  drug_pair_assessment: PubMedCalibrationReview["drugPairAssessment"];
+  id: string;
+  interaction_assessment: PubMedCalibrationReview["interactionAssessment"];
+  missing_context: PubMedCalibrationReview["missingContext"];
+  notes: string;
+  resolution_assessment: PubMedCalibrationReview["resolutionAssessment"];
+  reviewer_id: string;
+  set_id: string;
+  severity_management_assessment: PubMedCalibrationReview["severityManagementAssessment"];
+  time_bucket: PubMedCalibrationReview["timeBucket"];
+  updated_at: string;
 }
 
 type KgNodeSourceCoverage = Pick<KgNode, "sourceConflicts" | "sourceCoverage">;
@@ -222,6 +241,60 @@ export async function listPubMedInteractionCandidatesByIds(
       ? (coverageByNodeId.get(candidate.resolvedTargetId) ?? null)
       : null,
   }));
+}
+
+export async function listPubMedCalibrationReviews(
+  client: SupabaseClient,
+  setId: string,
+): Promise<PubMedCalibrationReview[]> {
+  const { data, error } = await client
+    .from("pubmed_calibration_review")
+    .select("*")
+    .eq("set_id", setId)
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as PubMedCalibrationReviewRow[]).map(
+    mapCalibrationReviewRow,
+  );
+}
+
+export async function upsertPubMedCalibrationReview(
+  client: SupabaseClient,
+  review: PubMedCalibrationReviewInput,
+): Promise<PubMedCalibrationReview> {
+  const { data, error } = await client
+    .from("pubmed_calibration_review")
+    .upsert(
+      {
+        candidate_id: review.candidateId,
+        decision: review.decision ?? null,
+        drug_pair_assessment: review.drugPairAssessment ?? null,
+        interaction_assessment: review.interactionAssessment ?? null,
+        missing_context: review.missingContext,
+        notes: review.notes,
+        resolution_assessment: review.resolutionAssessment ?? null,
+        reviewer_id: review.reviewerId,
+        set_id: review.setId,
+        severity_management_assessment:
+          review.severityManagementAssessment ?? null,
+        time_bucket: review.timeBucket ?? null,
+      },
+      {
+        onConflict: "set_id,candidate_id,reviewer_id",
+      },
+    )
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapCalibrationReviewRow(data as PubMedCalibrationReviewRow);
 }
 
 export async function getHealthCanadaMonographCoverage(
@@ -516,6 +589,28 @@ function mapCandidateRow(
     reviewedBy: row.reviewed_by,
     reviewedAt: row.reviewed_at,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapCalibrationReviewRow(
+  row: PubMedCalibrationReviewRow,
+): PubMedCalibrationReview {
+  return {
+    candidateId: row.candidate_id,
+    createdAt: row.created_at,
+    decision: row.decision ?? null,
+    drugPairAssessment: row.drug_pair_assessment ?? null,
+    id: row.id,
+    interactionAssessment: row.interaction_assessment ?? null,
+    missingContext: row.missing_context ?? [],
+    notes: row.notes,
+    resolutionAssessment: row.resolution_assessment ?? null,
+    reviewerId: row.reviewer_id,
+    setId: row.set_id,
+    severityManagementAssessment:
+      row.severity_management_assessment ?? null,
+    timeBucket: row.time_bucket ?? null,
     updatedAt: row.updated_at,
   };
 }

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import {
   Linking,
@@ -9,31 +9,32 @@ import {
   View,
 } from "react-native";
 
-import { listPubMedInteractionCandidatesByIds } from "@clinrx/api";
-import type { PubMedInteractionCandidate } from "@clinrx/types";
+import {
+  listPubMedCalibrationReviews,
+  listPubMedInteractionCandidatesByIds,
+  upsertPubMedCalibrationReview,
+} from "@clinrx/api";
+import type {
+  PubMedCalibrationDecision,
+  PubMedCalibrationDrugPairAssessment,
+  PubMedCalibrationInteractionAssessment,
+  PubMedCalibrationMissingContext,
+  PubMedCalibrationResolutionAssessment,
+  PubMedCalibrationReview,
+  PubMedCalibrationReviewInput,
+  PubMedCalibrationSeverityManagementAssessment,
+  PubMedCalibrationTimeBucket,
+  PubMedInteractionCandidate,
+} from "@clinrx/types";
 
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { useAuthSession } from "@/hooks/useAuthSession";
 import { supabase } from "@/lib/supabase";
 
-type CalibrationDecision = "follow_up" | "publishable" | "reject";
-type ResolutionAssessment = "correct" | "wrong_level" | "wrong_node";
-type TimeBucket = "fast" | "medium" | "slow";
-type MissingContext =
-  | "cps_comparison"
-  | "full_article"
-  | "medeffect_safety"
-  | "nhp_data"
-  | "noc_context"
-  | "route_form"
-  | "severity_management";
-
-interface CalibrationReview {
-  decision?: CalibrationDecision;
-  missingContext: MissingContext[];
-  notes: string;
-  resolutionAssessment?: ResolutionAssessment;
-  timeBucket?: TimeBucket;
-}
+type DraftCalibrationReview = Omit<
+  PubMedCalibrationReviewInput,
+  "candidateId" | "reviewerId" | "setId"
+>;
 
 export default function CalibrationReviewScreen() {
   return (
@@ -44,30 +45,77 @@ export default function CalibrationReviewScreen() {
 }
 
 function CalibrationReviewContent() {
+  const { session } = useAuthSession();
+  const queryClient = useQueryClient();
+  const reviewerId = session?.user.id;
   const [reviewsByCandidateId, setReviewsByCandidateId] = useState<
-    Record<string, CalibrationReview>
-  >(readStoredCalibrationReviews);
+    Record<string, DraftCalibrationReview>
+  >({});
   const candidatesQuery = useQuery({
     queryKey: ["pubmed-calibration-set", calibrationCandidateIds],
     queryFn: () =>
       listPubMedInteractionCandidatesByIds(supabase, calibrationCandidateIds),
   });
+  const calibrationReviewsQuery = useQuery({
+    queryKey: ["pubmed-calibration-reviews", calibrationSetId],
+    queryFn: () => listPubMedCalibrationReviews(supabase, calibrationSetId),
+  });
+  const saveReviewMutation = useMutation({
+    mutationFn: (review: PubMedCalibrationReviewInput) =>
+      upsertPubMedCalibrationReview(supabase, review),
+    onSuccess: (savedReview) => {
+      queryClient.setQueryData<PubMedCalibrationReview[]>(
+        ["pubmed-calibration-reviews", calibrationSetId],
+        (current = []) => [
+          savedReview,
+          ...current.filter((review) => review.id !== savedReview.id),
+        ],
+      );
+    },
+  });
   const candidates = candidatesQuery.data ?? [];
+  const savedReviews = calibrationReviewsQuery.data ?? [];
+  const mergedReviews = useMemo(
+    () => mergeCalibrationReviews(savedReviews, reviewsByCandidateId, reviewerId),
+    [reviewsByCandidateId, reviewerId, savedReviews],
+  );
   const metrics = useMemo(
-    () => calculateMetrics(candidates, reviewsByCandidateId),
-    [candidates, reviewsByCandidateId],
+    () => calculateMetrics(candidates, mergedReviews),
+    [candidates, mergedReviews],
   );
 
   useEffect(() => {
-    try {
-      globalThis.localStorage?.setItem(
-        calibrationStorageKey,
-        JSON.stringify(reviewsByCandidateId),
-      );
-    } catch {
-      // Persistence is a convenience for the calibration page; review input still works without it.
+    if (!reviewerId || !calibrationReviewsQuery.data) {
+      return;
     }
-  }, [reviewsByCandidateId]);
+
+    const ownReviews = calibrationReviewsQuery.data.filter(
+      (review) => review.reviewerId === reviewerId,
+    );
+    setReviewsByCandidateId(Object.fromEntries(
+      ownReviews.map((review) => [review.candidateId, toDraftReview(review)]),
+    ));
+  }, [calibrationReviewsQuery.data, reviewerId]);
+
+  const updateReview = (
+    candidateId: string,
+    review: DraftCalibrationReview,
+  ) => {
+    if (!reviewerId) {
+      return;
+    }
+
+    setReviewsByCandidateId((current) => ({
+      ...current,
+      [candidateId]: review,
+    }));
+    saveReviewMutation.mutate({
+      ...review,
+      candidateId,
+      reviewerId,
+      setId: calibrationSetId,
+    });
+  };
 
   return (
     <ScrollView className="flex-1 bg-mist">
@@ -87,10 +135,19 @@ function CalibrationReviewContent() {
         </View>
 
         <MetricsPanel metrics={metrics} />
+        <View className="mt-3 rounded-lg border border-ink/10 bg-white px-4 py-3">
+          <Text className="text-sm leading-5 text-ink/70">
+            {saveReviewMutation.isPending
+              ? "Saving calibration response..."
+              : saveReviewMutation.isError
+                ? "Could not save the last calibration response. Try changing the answer again."
+                : "Responses autosave to the calibration table and do not publish or reject candidates."}
+          </Text>
+        </View>
 
-        {candidatesQuery.isLoading ? (
+        {candidatesQuery.isLoading || calibrationReviewsQuery.isLoading ? (
           <Text className="mt-4 text-ink/70">Loading calibration set...</Text>
-        ) : candidatesQuery.isError ? (
+        ) : candidatesQuery.isError || calibrationReviewsQuery.isError ? (
           <Text className="mt-4 text-coral">
             Could not load calibration candidates.
           </Text>
@@ -102,12 +159,7 @@ function CalibrationReviewContent() {
                 index={index}
                 key={candidate.id}
                 review={reviewsByCandidateId[candidate.id] ?? emptyReview}
-                setReview={(review) =>
-                  setReviewsByCandidateId((current) => ({
-                    ...current,
-                    [candidate.id]: review,
-                  }))
-                }
+                setReview={(review) => updateReview(candidate.id, review)}
               />
             ))}
           </View>
@@ -117,32 +169,23 @@ function CalibrationReviewContent() {
   );
 }
 
-function readStoredCalibrationReviews(): Record<string, CalibrationReview> {
-  try {
-    const stored = globalThis.localStorage?.getItem(calibrationStorageKey);
-    if (!stored) {
-      return {};
-    }
-
-    const parsed = JSON.parse(stored);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return parsed as Record<string, CalibrationReview>;
-  } catch {
-    return {};
-  }
-}
-
 function MetricsPanel({ metrics }: { metrics: CalibrationMetrics }) {
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
       <View className="flex-row flex-wrap gap-2">
         <MetricPill label="Reviewed" value={`${metrics.reviewed}/50`} />
+        <MetricPill label="Saved rows" value={metrics.reviewerRows} />
         <MetricPill label="Publishable" value={metrics.publishable} />
         <MetricPill label="Rejected" value={metrics.rejected} />
         <MetricPill label="Follow-up" value={metrics.followUp} />
+        <MetricPill
+          label="Real interaction"
+          value={`${Math.round(metrics.interactionRealRate * 100)}%`}
+        />
+        <MetricPill
+          label="Pair correct"
+          value={`${Math.round(metrics.drugPairAccuracy * 100)}%`}
+        />
         <MetricPill
           label="AI precision"
           value={`${Math.round(metrics.likelyPublishablePrecision * 100)}%`}
@@ -150,6 +193,10 @@ function MetricsPanel({ metrics }: { metrics: CalibrationMetrics }) {
         <MetricPill
           label="Resolution correct"
           value={`${Math.round(metrics.resolutionAccuracy * 100)}%`}
+        />
+        <MetricPill
+          label="Severity ok"
+          value={`${Math.round(metrics.severityManagementAcceptableRate * 100)}%`}
         />
         <MetricPill label="Over 3 min" value={metrics.slowReviews} />
       </View>
@@ -191,8 +238,8 @@ function CalibrationCandidateCard({
 }: {
   candidate: PubMedInteractionCandidate;
   index: number;
-  review: CalibrationReview;
-  setReview: (review: CalibrationReview) => void;
+  review: DraftCalibrationReview;
+  setReview: (review: DraftCalibrationReview) => void;
 }) {
   const bucket = getCalibrationBucket(index);
 
@@ -272,28 +319,52 @@ function CalibrationCandidateCard({
 
       <View className="mt-4 gap-3 rounded-lg border border-ink/10 bg-mist p-3">
         <SegmentedControl
-          label="Calibration decision"
-          options={decisionOptions}
-          selected={review.decision}
-          onSelect={(decision) => setReview({ ...review, decision })}
+          label="1. Is this a real clinically meaningful interaction?"
+          options={interactionAssessmentOptions}
+          selected={review.interactionAssessment ?? undefined}
+          onSelect={(interactionAssessment) =>
+            setReview({ ...review, interactionAssessment })
+          }
         />
         <SegmentedControl
-          label="Resolution assessment"
+          label="2. Is the extracted drug pair correct?"
+          options={drugPairAssessmentOptions}
+          selected={review.drugPairAssessment ?? undefined}
+          onSelect={(drugPairAssessment) =>
+            setReview({ ...review, drugPairAssessment })
+          }
+        />
+        <SegmentedControl
+          label="3. Are the resolved Canadian graph nodes correct?"
           options={resolutionAssessmentOptions}
-          selected={review.resolutionAssessment}
+          selected={review.resolutionAssessment ?? undefined}
           onSelect={(resolutionAssessment) =>
             setReview({ ...review, resolutionAssessment })
           }
         />
         <SegmentedControl
-          label="Review time"
+          label="4. Is severity/management acceptable?"
+          options={severityManagementAssessmentOptions}
+          selected={review.severityManagementAssessment ?? undefined}
+          onSelect={(severityManagementAssessment) =>
+            setReview({ ...review, severityManagementAssessment })
+          }
+        />
+        <SegmentedControl
+          label="5. Calibration decision"
+          options={decisionOptions}
+          selected={review.decision ?? undefined}
+          onSelect={(decision) => setReview({ ...review, decision })}
+        />
+        <SegmentedControl
+          label="6. Review time"
           options={timeBucketOptions}
-          selected={review.timeBucket}
+          selected={review.timeBucket ?? undefined}
           onSelect={(timeBucket) => setReview({ ...review, timeBucket })}
         />
         <View>
           <Text className="text-sm font-semibold text-ink">
-            Missing context
+            7. Missing context
           </Text>
           <View className="mt-2 flex-row flex-wrap gap-2">
             {missingContextOptions.map((option) => {
@@ -333,7 +404,9 @@ function CalibrationCandidateCard({
           </View>
         </View>
         <View>
-          <Text className="text-sm font-semibold text-ink">Notes</Text>
+          <Text className="text-sm font-semibold text-ink">
+            Reviewer note
+          </Text>
           <TextInput
             className="mt-2 min-h-20 rounded-lg border border-ink/15 bg-white px-3 py-3 text-base leading-6 text-ink"
             maxLength={600}
@@ -394,61 +467,97 @@ function SegmentedControl<T extends string>({
 }
 
 interface CalibrationMetrics {
+  drugPairAccuracy: number;
   followUp: number;
+  interactionRealRate: number;
   likelyPublishablePrecision: number;
-  missingContextCounts: Record<MissingContext, number>;
+  missingContextCounts: Record<PubMedCalibrationMissingContext, number>;
   publishable: number;
   rejected: number;
   resolutionAccuracy: number;
   reviewed: number;
+  reviewerRows: number;
+  severityManagementAcceptableRate: number;
   slowReviews: number;
 }
 
 function calculateMetrics(
   candidates: PubMedInteractionCandidate[],
-  reviewsByCandidateId: Record<string, CalibrationReview>,
+  reviews: PubMedCalibrationReview[],
 ): CalibrationMetrics {
-  const reviews = candidates.flatMap((candidate) => {
-    const review = reviewsByCandidateId[candidate.id];
+  const candidateById = new Map(
+    candidates.map((candidate) => [candidate.id, candidate]),
+  );
+  const decisionReviews = reviews.flatMap((review) => {
+    const candidate = candidateById.get(review.candidateId);
 
-    return review?.decision ? [{ candidate, review }] : [];
+    return candidate && review.decision ? [{ candidate, review }] : [];
   });
   const likelyPublishableReviews = reviews.filter(
-    ({ candidate }) => candidate.aiReviewVerdict === "likely_publishable",
+    (review) =>
+      candidateById.get(review.candidateId)?.aiReviewVerdict ===
+      "likely_publishable",
   );
   const resolutionAssessments = reviews.filter(
-    ({ review }) => review.resolutionAssessment,
+    (review) => review.resolutionAssessment,
+  );
+  const interactionAssessments = reviews.filter(
+    (review) => review.interactionAssessment,
+  );
+  const drugPairAssessments = reviews.filter(
+    (review) => review.drugPairAssessment,
+  );
+  const severityManagementAssessments = reviews.filter(
+    (review) => review.severityManagementAssessment,
   );
   const missingContextCounts = Object.fromEntries(
     missingContextOptions.map((option) => [option.value, 0]),
-  ) as Record<MissingContext, number>;
+  ) as Record<PubMedCalibrationMissingContext, number>;
 
-  for (const { review } of reviews) {
+  for (const review of reviews) {
     for (const missingContext of review.missingContext) {
       missingContextCounts[missingContext] += 1;
     }
   }
 
   return {
-    followUp: reviews.filter(({ review }) => review.decision === "follow_up")
-      .length,
+    drugPairAccuracy: drugPairAssessments.length
+      ? drugPairAssessments.filter(
+          (review) => review.drugPairAssessment === "correct",
+        ).length / drugPairAssessments.length
+      : 0,
+    followUp: decisionReviews.filter(
+      ({ review }) => review.decision === "follow_up",
+    ).length,
+    interactionRealRate: interactionAssessments.length
+      ? interactionAssessments.filter(
+          (review) => review.interactionAssessment === "real",
+        ).length / interactionAssessments.length
+      : 0,
     likelyPublishablePrecision: likelyPublishableReviews.length
       ? likelyPublishableReviews.filter(
-          ({ review }) => review.decision === "publishable",
+          (review) => review.decision === "publishable",
         ).length / likelyPublishableReviews.length
       : 0,
     missingContextCounts,
-    publishable: reviews.filter(({ review }) => review.decision === "publishable")
-      .length,
-    rejected: reviews.filter(({ review }) => review.decision === "reject")
+    publishable: decisionReviews.filter(
+      ({ review }) => review.decision === "publishable",
+    ).length,
+    rejected: decisionReviews.filter(({ review }) => review.decision === "reject")
       .length,
     resolutionAccuracy: resolutionAssessments.length
       ? resolutionAssessments.filter(
-          ({ review }) => review.resolutionAssessment === "correct",
+          (review) => review.resolutionAssessment === "correct",
         ).length / resolutionAssessments.length
       : 0,
-    reviewed: reviews.length,
-    slowReviews: reviews.filter(({ review }) => review.timeBucket === "slow")
+    reviewed: decisionReviews.length,
+    reviewerRows: reviews.length,
+    severityManagementAcceptableRate: severityManagementAssessments.length
+      ? severityManagementAssessments.filter(
+          (review) => review.severityManagementAssessment === "acceptable",
+        ).length / severityManagementAssessments.length
+      : 0,
+    slowReviews: reviews.filter((review) => review.timeBucket === "slow")
       .length,
   };
 }
@@ -459,6 +568,53 @@ function formatNode(node: PubMedInteractionCandidate["resolvedSourceNode"]) {
   }
 
   return `${node.canonicalName} (${node.type}, ${node.source})`;
+}
+
+function mergeCalibrationReviews(
+  savedReviews: PubMedCalibrationReview[],
+  draftReviewsByCandidateId: Record<string, DraftCalibrationReview>,
+  reviewerId?: string,
+): PubMedCalibrationReview[] {
+  if (!reviewerId) {
+    return savedReviews;
+  }
+
+  const draftReviews = Object.entries(draftReviewsByCandidateId).map(
+    ([candidateId, review]) =>
+      ({
+        ...review,
+        candidateId,
+        createdAt: new Date().toISOString(),
+        id: `draft-${candidateId}`,
+        reviewerId,
+        setId: calibrationSetId,
+        updatedAt: new Date().toISOString(),
+      }) satisfies PubMedCalibrationReview,
+  );
+
+  return [
+    ...draftReviews,
+    ...savedReviews.filter(
+      (review) =>
+        review.reviewerId !== reviewerId ||
+        !draftReviewsByCandidateId[review.candidateId],
+    ),
+  ];
+}
+
+function toDraftReview(
+  review: PubMedCalibrationReview,
+): DraftCalibrationReview {
+  return {
+    decision: review.decision,
+    drugPairAssessment: review.drugPairAssessment,
+    interactionAssessment: review.interactionAssessment,
+    missingContext: review.missingContext,
+    notes: review.notes,
+    resolutionAssessment: review.resolutionAssessment,
+    severityManagementAssessment: review.severityManagementAssessment,
+    timeBucket: review.timeBucket,
+  };
 }
 
 function getCalibrationBucket(index: number) {
@@ -473,14 +629,36 @@ function getCalibrationBucket(index: number) {
   return { label: "Flagged/unresolved" };
 }
 
-const emptyReview: CalibrationReview = {
+const emptyReview: DraftCalibrationReview = {
   missingContext: [],
   notes: "",
 };
 
-const calibrationStorageKey = "clinrx.pubmedCalibrationReviews.v1";
+const calibrationSetId = "pubmed-interaction-calibration-2026-06-08";
 
-const decisionOptions: { label: string; value: CalibrationDecision }[] = [
+const interactionAssessmentOptions: {
+  label: string;
+  value: PubMedCalibrationInteractionAssessment;
+}[] = [
+  { label: "Real", value: "real" },
+  { label: "Not interaction", value: "not_interaction" },
+  { label: "Unclear", value: "unclear" },
+];
+
+const drugPairAssessmentOptions: {
+  label: string;
+  value: PubMedCalibrationDrugPairAssessment;
+}[] = [
+  { label: "Correct", value: "correct" },
+  { label: "Partly correct", value: "partially_correct" },
+  { label: "Wrong pair", value: "wrong_pair" },
+  { label: "Unclear", value: "unclear" },
+];
+
+const decisionOptions: {
+  label: string;
+  value: PubMedCalibrationDecision;
+}[] = [
   { label: "Publishable", value: "publishable" },
   { label: "Follow-up", value: "follow_up" },
   { label: "Reject", value: "reject" },
@@ -488,14 +666,28 @@ const decisionOptions: { label: string; value: CalibrationDecision }[] = [
 
 const resolutionAssessmentOptions: {
   label: string;
-  value: ResolutionAssessment;
+  value: PubMedCalibrationResolutionAssessment;
 }[] = [
   { label: "Correct", value: "correct" },
   { label: "Wrong level", value: "wrong_level" },
   { label: "Wrong node", value: "wrong_node" },
+  { label: "Unresolved/unclear", value: "unresolved_unclear" },
 ];
 
-const timeBucketOptions: { label: string; value: TimeBucket }[] = [
+const severityManagementAssessmentOptions: {
+  label: string;
+  value: PubMedCalibrationSeverityManagementAssessment;
+}[] = [
+  { label: "Acceptable", value: "acceptable" },
+  { label: "Needs revision", value: "needs_revision" },
+  { label: "Wrong", value: "wrong" },
+  { label: "Not assessed", value: "not_assessed" },
+];
+
+const timeBucketOptions: {
+  label: string;
+  value: PubMedCalibrationTimeBucket;
+}[] = [
   { label: "Under 1 min", value: "fast" },
   { label: "1-3 min", value: "medium" },
   { label: "Over 3 min", value: "slow" },
@@ -504,7 +696,7 @@ const timeBucketOptions: { label: string; value: TimeBucket }[] = [
 const missingContextOptions: {
   label: string;
   shortLabel: string;
-  value: MissingContext;
+  value: PubMedCalibrationMissingContext;
 }[] = [
   { label: "CPS comparison", shortLabel: "CPS", value: "cps_comparison" },
   { label: "Full article", shortLabel: "Article", value: "full_article" },
