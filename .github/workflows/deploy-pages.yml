@@ -38,6 +38,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build shared packages
+        run: |
+          pnpm --filter @clinrx/types build
+          pnpm --filter @clinrx/validation build
+          pnpm --filter @clinrx/core build
+          pnpm --filter @clinrx/api build
+
       - name: Build mobile web app
         env:
           EXPO_PUBLIC_POWERSYNC_URL: ${{ secrets.EXPO_PUBLIC_POWERSYNC_URL }}
