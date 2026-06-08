@@ -27,27 +27,24 @@ import type {
   PubMedInteractionCandidate,
 } from "@clinrx/types";
 
-import { ProtectedRoute } from "@/components/ProtectedRoute";
-import { useAuthSession } from "@/hooks/useAuthSession";
+import { ReviewPasswordGate } from "@/components/ReviewPasswordGate";
 import { supabase } from "@/lib/supabase";
 
 type DraftCalibrationReview = Omit<
   PubMedCalibrationReviewInput,
-  "candidateId" | "reviewerId" | "setId"
+  "candidateId" | "reviewerId" | "reviewerKey" | "setId"
 >;
 
 export default function CalibrationReviewScreen() {
   return (
-    <ProtectedRoute>
+    <ReviewPasswordGate>
       <CalibrationReviewContent />
-    </ProtectedRoute>
+    </ReviewPasswordGate>
   );
 }
 
 function CalibrationReviewContent() {
-  const { session } = useAuthSession();
   const queryClient = useQueryClient();
-  const reviewerId = session?.user.id;
   const [reviewsByCandidateId, setReviewsByCandidateId] = useState<
     Record<string, DraftCalibrationReview>
   >({});
@@ -76,15 +73,13 @@ function CalibrationReviewContent() {
   const candidates = candidatesQuery.data ?? [];
   const savedReviews = calibrationReviewsQuery.data ?? [];
   const mergedReviews = useMemo(
-    () => mergeCalibrationReviews(savedReviews, reviewsByCandidateId, reviewerId),
-    [reviewsByCandidateId, reviewerId, savedReviews],
+    () => mergeCalibrationReviews(savedReviews, reviewsByCandidateId),
+    [reviewsByCandidateId, savedReviews],
   );
   const metricReviews = useMemo(
     () =>
-      reviewerId
-        ? mergedReviews.filter((review) => review.reviewerId === reviewerId)
-        : mergedReviews,
-    [mergedReviews, reviewerId],
+      mergedReviews.filter((review) => review.reviewerKey === reviewerKey),
+    [mergedReviews],
   );
   const metrics = useMemo(
     () => calculateMetrics(candidates, metricReviews, savedReviews.length),
@@ -92,26 +87,22 @@ function CalibrationReviewContent() {
   );
 
   useEffect(() => {
-    if (!reviewerId || !calibrationReviewsQuery.data) {
+    if (!calibrationReviewsQuery.data) {
       return;
     }
 
     const ownReviews = calibrationReviewsQuery.data.filter(
-      (review) => review.reviewerId === reviewerId,
+      (review) => review.reviewerKey === reviewerKey,
     );
     setReviewsByCandidateId(Object.fromEntries(
       ownReviews.map((review) => [review.candidateId, toDraftReview(review)]),
     ));
-  }, [calibrationReviewsQuery.data, reviewerId]);
+  }, [calibrationReviewsQuery.data]);
 
   const updateReview = (
     candidateId: string,
     review: DraftCalibrationReview,
   ) => {
-    if (!reviewerId) {
-      return;
-    }
-
     setReviewsByCandidateId((current) => ({
       ...current,
       [candidateId]: review,
@@ -119,7 +110,7 @@ function CalibrationReviewContent() {
     saveReviewMutation.mutate({
       ...review,
       candidateId,
-      reviewerId,
+      reviewerKey,
       setId: calibrationSetId,
     });
   };
@@ -581,12 +572,7 @@ function formatNode(node: PubMedInteractionCandidate["resolvedSourceNode"]) {
 function mergeCalibrationReviews(
   savedReviews: PubMedCalibrationReview[],
   draftReviewsByCandidateId: Record<string, DraftCalibrationReview>,
-  reviewerId?: string,
 ): PubMedCalibrationReview[] {
-  if (!reviewerId) {
-    return savedReviews;
-  }
-
   const draftReviews = Object.entries(draftReviewsByCandidateId).map(
     ([candidateId, review]) =>
       ({
@@ -594,7 +580,8 @@ function mergeCalibrationReviews(
         candidateId,
         createdAt: new Date().toISOString(),
         id: `draft-${candidateId}`,
-        reviewerId,
+        reviewerId: null,
+        reviewerKey,
         setId: calibrationSetId,
         updatedAt: new Date().toISOString(),
       }) satisfies PubMedCalibrationReview,
@@ -604,7 +591,7 @@ function mergeCalibrationReviews(
     ...draftReviews,
     ...savedReviews.filter(
       (review) =>
-        review.reviewerId !== reviewerId ||
+        review.reviewerKey !== reviewerKey ||
         !draftReviewsByCandidateId[review.candidateId],
     ),
   ];
@@ -643,6 +630,7 @@ const emptyReview: DraftCalibrationReview = {
 };
 
 const calibrationSetId = "pubmed-interaction-calibration-2026-06-08";
+const reviewerKey = "shared-password-reviewer";
 
 const interactionAssessmentOptions: {
   label: string;

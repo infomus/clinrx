@@ -87,7 +87,8 @@ export interface PubMedCalibrationReview {
   id: string;
   setId: string;
   candidateId: string;
-  reviewerId: string;
+  reviewerId?: string | null;
+  reviewerKey: string;
   interactionAssessment?: PubMedCalibrationInteractionAssessment | null;
   drugPairAssessment?: PubMedCalibrationDrugPairAssessment | null;
   resolutionAssessment?: PubMedCalibrationResolutionAssessment | null;

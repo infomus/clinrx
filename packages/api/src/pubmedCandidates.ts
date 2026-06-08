@@ -88,7 +88,8 @@ interface PubMedCalibrationReviewRow {
   missing_context: PubMedCalibrationReview["missingContext"];
   notes: string;
   resolution_assessment: PubMedCalibrationReview["resolutionAssessment"];
-  reviewer_id: string;
+  reviewer_id: string | null;
+  reviewer_key: string;
   set_id: string;
   severity_management_assessment: PubMedCalibrationReview["severityManagementAssessment"];
   time_bucket: PubMedCalibrationReview["timeBucket"];
@@ -277,14 +278,15 @@ export async function upsertPubMedCalibrationReview(
         missing_context: review.missingContext,
         notes: review.notes,
         resolution_assessment: review.resolutionAssessment ?? null,
-        reviewer_id: review.reviewerId,
+        reviewer_id: review.reviewerId ?? null,
+        reviewer_key: review.reviewerKey,
         set_id: review.setId,
         severity_management_assessment:
           review.severityManagementAssessment ?? null,
         time_bucket: review.timeBucket ?? null,
       },
       {
-        onConflict: "set_id,candidate_id,reviewer_id",
+        onConflict: "set_id,candidate_id,reviewer_key",
       },
     )
     .select("*")
@@ -607,6 +609,7 @@ function mapCalibrationReviewRow(
     notes: row.notes,
     resolutionAssessment: row.resolution_assessment ?? null,
     reviewerId: row.reviewer_id,
+    reviewerKey: row.reviewer_key,
     setId: row.set_id,
     severityManagementAssessment:
       row.severity_management_assessment ?? null,
