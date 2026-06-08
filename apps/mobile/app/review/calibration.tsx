@@ -228,6 +228,122 @@ function MetricPill({
   );
 }
 
+function ResolutionNodeDetails({
+  coverage,
+  label,
+  node,
+}: {
+  coverage?: PubMedInteractionCandidate["sourceMonographCoverage"];
+  label: string;
+  node?: PubMedInteractionCandidate["resolvedSourceNode"];
+}) {
+  if (!node) {
+    return (
+      <View className="rounded-lg border border-coral/20 bg-white p-3">
+        <Text className="text-sm font-semibold text-ink">{label}</Text>
+        <Text className="mt-1 text-sm leading-5 text-coral">Unresolved</Text>
+      </View>
+    );
+  }
+
+  const metadata = getNodeMetadataRows(node);
+  const sourceLinks = getNodeSourceLinks(node);
+  const productExamples = coverage?.productExamples ?? [];
+
+  return (
+    <View className="rounded-lg border border-ink/10 bg-white p-3">
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm font-semibold text-ink">{label}</Text>
+        <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+          {node.source}
+        </Text>
+        <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+          {node.type}
+        </Text>
+        {node.sourceCoverage ? (
+          <Text className="rounded-md bg-leaf/15 px-2 py-1 text-xs font-semibold uppercase text-leaf">
+            {sourceCoverageLabels[node.sourceCoverage] ?? node.sourceCoverage}
+          </Text>
+        ) : null}
+      </View>
+      <Text className="mt-2 text-base font-semibold text-ink">
+        {node.canonicalName}
+      </Text>
+      {metadata.length ? (
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {metadata.map((item) => (
+            <Text
+              className="rounded-md bg-mist px-2 py-1 text-xs font-semibold text-ink/70"
+              key={`${item.label}:${item.value}`}
+            >
+              {item.label}: {item.value}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+      {sourceLinks.length ? (
+        <View className="mt-3 flex-row flex-wrap gap-2">
+          {sourceLinks.map((link) => (
+            <Pressable
+              accessibilityRole="link"
+              className="rounded-lg border border-leaf/25 bg-leaf/10 px-3 py-2"
+              key={link.url}
+              onPress={() => void Linking.openURL(link.url)}
+            >
+              <Text className="text-sm font-semibold text-leaf">
+                {link.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : (
+        <Text className="mt-2 text-sm leading-5 text-ink/60">
+          No direct source page identifier is stored for this node.
+        </Text>
+      )}
+      {productExamples.length ? (
+        <View className="mt-3 border-t border-ink/10 pt-3">
+          <Text className="text-xs font-semibold uppercase text-ink/50">
+            Monograph-backed linked products
+          </Text>
+          <View className="mt-2 gap-2">
+            {productExamples.slice(0, 3).map((product) => {
+              const productUrl = product.drugCode
+                ? getHealthCanadaDpdUrl(product.drugCode)
+                : null;
+
+              return (
+                <View key={product.nodeId}>
+                  <Text className="text-sm leading-5 text-ink/70">
+                    {product.name}
+                    {product.din?.length
+                      ? ` • DIN ${product.din.join(", ")}`
+                      : ""}
+                    {product.status?.length
+                      ? ` • ${product.status.join(", ")}`
+                      : ""}
+                  </Text>
+                  {productUrl ? (
+                    <Pressable
+                      accessibilityRole="link"
+                      className="mt-1 self-start"
+                      onPress={() => void Linking.openURL(productUrl)}
+                    >
+                      <Text className="text-sm font-semibold text-leaf">
+                        Open Health Canada DPD product
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function CalibrationCandidateCard({
   candidate,
   index,
@@ -284,12 +400,18 @@ function CalibrationCandidateCard({
 
       <View className="mt-3 rounded-lg border border-ink/10 bg-mist p-3">
         <Text className="text-sm font-semibold text-ink">Resolution</Text>
-        <Text className="mt-1 text-sm leading-5 text-ink/70">
-          Source: {formatNode(candidate.resolvedSourceNode)}
-        </Text>
-        <Text className="mt-1 text-sm leading-5 text-ink/70">
-          Target: {formatNode(candidate.resolvedTargetNode)}
-        </Text>
+        <View className="mt-2 gap-3">
+          <ResolutionNodeDetails
+            coverage={candidate.sourceMonographCoverage}
+            label="Source"
+            node={candidate.resolvedSourceNode}
+          />
+          <ResolutionNodeDetails
+            coverage={candidate.targetMonographCoverage}
+            label="Target"
+            node={candidate.resolvedTargetNode}
+          />
+        </View>
       </View>
 
       {candidate.sourceQuote ? (
@@ -362,9 +484,30 @@ function CalibrationCandidateCard({
         />
         <View>
           <Text className="text-sm font-semibold text-ink">
-            7. Missing context
+            7. Missing context, if any
+          </Text>
+          <Text className="mt-1 text-sm leading-5 text-ink/60">
+            Select none when the displayed context is enough to decide.
           </Text>
           <View className="mt-2 flex-row flex-wrap gap-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: !review.missingContext.length }}
+              className={`rounded-lg border px-3 py-2 ${
+                !review.missingContext.length
+                  ? "border-leaf bg-leaf"
+                  : "border-ink/10 bg-white"
+              }`}
+              onPress={() => setReview({ ...review, missingContext: [] })}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  !review.missingContext.length ? "text-white" : "text-ink"
+                }`}
+              >
+                None
+              </Text>
+            </Pressable>
             {missingContextOptions.map((option) => {
               const selected = review.missingContext.includes(option.value);
 
@@ -569,6 +712,134 @@ function formatNode(node: PubMedInteractionCandidate["resolvedSourceNode"]) {
   return `${node.canonicalName} (${node.type}, ${node.source})`;
 }
 
+function getNodeSourceLinks(
+  node: NonNullable<PubMedInteractionCandidate["resolvedSourceNode"]>,
+): Array<{ label: string; url: string }> {
+  const drugCode = readIdentifierString(node.identifiers, "drug_code");
+  const cpsId =
+    readIdentifierString(node.identifiers, "cps_id") ??
+    readIdentifierString(node.identifiers, "dpd_keyref");
+
+  return [
+    drugCode
+      ? {
+          label: "Open Health Canada DPD",
+          url: getHealthCanadaDpdUrl(drugCode),
+        }
+      : null,
+    cpsId || node.source === "CPS"
+      ? {
+          label: "Search CPS/e-CPS",
+          url: `https://www.e-therapeutics.ca/search?query=${encodeURIComponent(
+            node.canonicalName,
+          )}`,
+        }
+      : null,
+    node.source === "HEALTH_CANADA_NOC"
+      ? {
+          label: "Open Health Canada NOC search",
+          url: `https://health-products.canada.ca/noc-ac/index-eng.jsp?query=${encodeURIComponent(
+            node.canonicalName,
+          )}`,
+        }
+      : null,
+    node.source === "HEALTH_CANADA_SUMMARY_REPORT"
+      ? {
+          label: "Open Health Canada drug decisions search",
+          url: `https://dhpp.hpfb-dgpsa.ca/review-documents/search?query=${encodeURIComponent(
+            node.canonicalName,
+          )}`,
+        }
+      : null,
+  ].filter((link): link is { label: string; url: string } => Boolean(link));
+}
+
+function getHealthCanadaDpdUrl(drugCode: string) {
+  return `https://health-products.canada.ca/dpd-bdpp/info.do?code=${encodeURIComponent(
+    drugCode,
+  )}&lang=en`;
+}
+
+function getNodeMetadataRows(
+  node: NonNullable<PubMedInteractionCandidate["resolvedSourceNode"]>,
+): Array<{ label: string; value: string }> {
+  const identifiers = node.identifiers;
+  const rows = [
+    ["CPS ID", readIdentifierString(identifiers, "cps_id")],
+    ["CPS DPD", readIdentifierString(identifiers, "dpd_keyref")],
+    ["DIN", readIdentifierValue(identifiers, "din")],
+    ["Drug code", readIdentifierString(identifiers, "drug_code")],
+    ["ATC", readIdentifierValue(identifiers, "atc")],
+    ["Ingredient", readFirstIdentifierValue(identifiers, [
+      "cps_ingredient_name",
+      "health_canada_ingredient_name",
+      "ingredient_name",
+      "generic_name",
+    ])],
+    ["Status", readIdentifierValue(identifiers, "status")],
+    ["Route", readIdentifierValue(identifiers, "route")],
+    ["Form", readIdentifierValue(identifiers, "dosage_form")],
+    ["Company", readIdentifierValue(identifiers, "company_name")],
+    ["Manufacturer", readIdentifierValue(identifiers, "manufacturer")],
+    ["Schedule", readIdentifierValue(identifiers, "schedule")],
+    ["Therapeutic class", readIdentifierValue(identifiers, "therapeutic_class")],
+  ] as const;
+
+  return rows.flatMap(([label, value]) =>
+    value ? [{ label, value: truncateMetadataValue(value) }] : [],
+  );
+}
+
+function readFirstIdentifierValue(
+  identifiers: Record<string, unknown>,
+  keys: string[],
+): string | null {
+  for (const key of keys) {
+    const value = readIdentifierValue(identifiers, key);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function readIdentifierString(
+  identifiers: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = identifiers[key];
+
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readIdentifierValue(
+  identifiers: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = identifiers[key];
+
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+
+  if (Array.isArray(value)) {
+    const values = value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    return values.length ? values.join(", ") : null;
+  }
+
+  return null;
+}
+
+function truncateMetadataValue(value: string) {
+  return value.length > 90 ? `${value.slice(0, 87)}...` : value;
+}
+
 function mergeCalibrationReviews(
   savedReviews: PubMedCalibrationReview[],
   draftReviewsByCandidateId: Record<string, DraftCalibrationReview>,
@@ -631,6 +902,14 @@ const emptyReview: DraftCalibrationReview = {
 
 const calibrationSetId = "pubmed-interaction-calibration-2026-06-08";
 const reviewerKey = "shared-password-reviewer";
+
+const sourceCoverageLabels = {
+  cps_covered: "CPS-covered",
+  cps_only: "CPS only",
+  health_canada_only: "Health Canada-only",
+  possible_source_match: "Possible source match",
+  source_conflict: "Source conflict",
+} as const;
 
 const interactionAssessmentOptions: {
   label: string;
