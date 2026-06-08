@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  CpsMonographCoverage,
+  CpsMonographExample,
   EdgeReviewStatus,
   HealthCanadaMonographCoverage,
   HealthCanadaMonographProductExample,
@@ -76,6 +78,15 @@ interface HealthCanadaMonographCoverageRow {
   section_counts: unknown;
   total_chunk_count: number;
   total_product_count: number;
+}
+
+interface CpsMonographCoverageRow {
+  direct_monograph_count: number;
+  linked_monograph_count: number;
+  monograph_examples: unknown;
+  node_id: string;
+  product_listing_count: number;
+  total_chunk_count: number;
 }
 
 interface PubMedCalibrationReviewRow {
@@ -165,11 +176,12 @@ export async function listPubMedInteractionCandidates(
       (nodeId): nodeId is string => Boolean(nodeId),
     ),
   );
-  const coverageByNodeId = await getHealthCanadaMonographCoverage(
-    client,
-    resolvedNodeIds,
-  );
-  const resolvedNodeById = await getKgNodesById(client, resolvedNodeIds);
+  const [coverageByNodeId, cpsCoverageByNodeId, resolvedNodeById] =
+    await Promise.all([
+      getHealthCanadaMonographCoverage(client, resolvedNodeIds),
+      getCpsMonographCoverage(client, resolvedNodeIds),
+      getKgNodesById(client, resolvedNodeIds),
+    ]);
 
   return candidates.map((candidate) => ({
     ...candidate,
@@ -178,6 +190,12 @@ export async function listPubMedInteractionCandidates(
       : null,
     resolvedTargetNode: candidate.resolvedTargetId
       ? (resolvedNodeById.get(candidate.resolvedTargetId) ?? null)
+      : null,
+    sourceCpsMonographCoverage: candidate.resolvedSourceId
+      ? (cpsCoverageByNodeId.get(candidate.resolvedSourceId) ?? null)
+      : null,
+    targetCpsMonographCoverage: candidate.resolvedTargetId
+      ? (cpsCoverageByNodeId.get(candidate.resolvedTargetId) ?? null)
       : null,
     sourceMonographCoverage: candidate.resolvedSourceId
       ? (coverageByNodeId.get(candidate.resolvedSourceId) ?? null)
@@ -222,8 +240,10 @@ export async function listPubMedInteractionCandidatesByIds(
       (nodeId): nodeId is string => Boolean(nodeId),
     ),
   );
-  const [coverageByNodeId, resolvedNodeById] = await Promise.all([
+  const [coverageByNodeId, cpsCoverageByNodeId, resolvedNodeById] =
+    await Promise.all([
     getHealthCanadaMonographCoverage(client, resolvedNodeIds),
+    getCpsMonographCoverage(client, resolvedNodeIds),
     getKgNodesById(client, resolvedNodeIds),
   ]);
 
@@ -234,6 +254,12 @@ export async function listPubMedInteractionCandidatesByIds(
       : null,
     resolvedTargetNode: candidate.resolvedTargetId
       ? (resolvedNodeById.get(candidate.resolvedTargetId) ?? null)
+      : null,
+    sourceCpsMonographCoverage: candidate.resolvedSourceId
+      ? (cpsCoverageByNodeId.get(candidate.resolvedSourceId) ?? null)
+      : null,
+    targetCpsMonographCoverage: candidate.resolvedTargetId
+      ? (cpsCoverageByNodeId.get(candidate.resolvedTargetId) ?? null)
       : null,
     sourceMonographCoverage: candidate.resolvedSourceId
       ? (coverageByNodeId.get(candidate.resolvedSourceId) ?? null)
@@ -330,6 +356,40 @@ export async function getHealthCanadaMonographCoverage(
       sectionCounts: normalizeSectionCounts(row.section_counts),
       totalChunkCount: row.total_chunk_count,
       totalProductCount: row.total_product_count,
+    });
+  }
+
+  return coverageByNodeId;
+}
+
+export async function getCpsMonographCoverage(
+  client: SupabaseClient,
+  nodeIds: string[],
+): Promise<Map<string, CpsMonographCoverage>> {
+  const uniqueNodeIds = [...new Set(nodeIds)];
+  const coverageByNodeId = new Map<string, CpsMonographCoverage>();
+
+  if (!uniqueNodeIds.length) {
+    return coverageByNodeId;
+  }
+
+  const { data, error } = await client.rpc("get_cps_monograph_coverage", {
+    node_ids: uniqueNodeIds,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  for (const row of (data ?? []) as CpsMonographCoverageRow[]) {
+    coverageByNodeId.set(row.node_id, {
+      directMonographCount: row.direct_monograph_count,
+      linkedMonographCount: row.linked_monograph_count,
+      monographExamples: normalizeCpsMonographExamples(
+        row.monograph_examples,
+      ),
+      productListingCount: row.product_listing_count,
+      totalChunkCount: row.total_chunk_count,
     });
   }
 
@@ -793,6 +853,42 @@ function normalizeProductExamples(
       name,
       nodeId,
       status: normalizeStringArray(record.status),
+    };
+  });
+}
+
+function normalizeCpsMonographExamples(value: unknown): CpsMonographExample[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+
+    const record = item as Record<string, unknown>;
+    const chunkCount =
+      typeof record.chunkCount === "number" ? record.chunkCount : 0;
+    const cpsId = typeof record.cpsId === "string" ? record.cpsId : null;
+    const matchKind =
+      record.matchKind === "direct" || record.matchKind === "linked"
+        ? record.matchKind
+        : null;
+    const name = typeof record.name === "string" ? record.name : null;
+    const nodeId = typeof record.nodeId === "string" ? record.nodeId : null;
+
+    if (!cpsId || !matchKind || !name || !nodeId) {
+      return [];
+    }
+
+    return {
+      chunkCount,
+      cpsId,
+      matchKind,
+      name,
+      nodeId,
+      productNames: normalizeStringArray(record.productNames) ?? [],
     };
   });
 }

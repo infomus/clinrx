@@ -153,6 +153,23 @@ export interface HealthCanadaMonographCoverage {
   totalProductCount: number;
 }
 
+export interface CpsMonographExample {
+  chunkCount: number;
+  cpsId: string;
+  matchKind: "direct" | "linked";
+  name: string;
+  nodeId: string;
+  productNames: string[];
+}
+
+export interface CpsMonographCoverage {
+  directMonographCount: number;
+  linkedMonographCount: number;
+  monographExamples: CpsMonographExample[];
+  productListingCount: number;
+  totalChunkCount: number;
+}
+
 export interface InteractionCitation {
   pmid: string;
   title?: string;
@@ -224,6 +241,8 @@ export interface PubMedInteractionCandidate {
   aiReviewScore?: number | null;
   aiReviewVerdict?: PubMedAiReviewVerdict | null;
   aiReviewedAt?: string | null;
+  sourceCpsMonographCoverage?: CpsMonographCoverage | null;
+  targetCpsMonographCoverage?: CpsMonographCoverage | null;
   sourceMonographCoverage?: HealthCanadaMonographCoverage | null;
   targetMonographCoverage?: HealthCanadaMonographCoverage | null;
   rejectionReason?: PubMedRejectionReason | null;

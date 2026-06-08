@@ -230,10 +230,12 @@ function MetricPill({
 
 function ResolutionNodeDetails({
   coverage,
+  cpsCoverage,
   label,
   node,
 }: {
   coverage?: PubMedInteractionCandidate["sourceMonographCoverage"];
+  cpsCoverage?: PubMedInteractionCandidate["sourceCpsMonographCoverage"];
   label: string;
   node?: PubMedInteractionCandidate["resolvedSourceNode"];
 }) {
@@ -248,6 +250,7 @@ function ResolutionNodeDetails({
 
   const metadata = getNodeMetadataRows(node);
   const sourceLinks = getNodeSourceLinks(node);
+  const cpsMonographExamples = cpsCoverage?.monographExamples ?? [];
   const productExamples = coverage?.productExamples ?? [];
 
   return (
@@ -301,10 +304,43 @@ function ResolutionNodeDetails({
           No direct source page identifier is stored for this node.
         </Text>
       )}
+      {cpsMonographExamples.length ? (
+        <View className="mt-3 border-t border-ink/10 pt-3">
+          <Text className="text-xs font-semibold uppercase text-ink/50">
+            Related CPS monographs
+          </Text>
+          <View className="mt-2 gap-2">
+            {cpsMonographExamples.slice(0, 3).map((monograph) => (
+              <View key={monograph.nodeId}>
+                <Text className="text-sm leading-5 text-ink/70">
+                  {monograph.name}
+                  {monograph.productNames.length
+                    ? ` • via ${monograph.productNames.slice(0, 2).join(", ")}`
+                    : ""}
+                  {monograph.chunkCount
+                    ? ` • ${monograph.chunkCount} CPS sections`
+                    : ""}
+                </Text>
+                <Pressable
+                  accessibilityRole="link"
+                  className="mt-1 self-start"
+                  onPress={() =>
+                    void Linking.openURL(getCpsMonographUrl(monograph.cpsId))
+                  }
+                >
+                  <Text className="text-sm font-semibold text-leaf">
+                    Open CPS monograph
+                  </Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
       {productExamples.length ? (
         <View className="mt-3 border-t border-ink/10 pt-3">
           <Text className="text-xs font-semibold uppercase text-ink/50">
-            Monograph-backed linked products
+            Health Canada monograph-backed products
           </Text>
           <View className="mt-2 gap-2">
             {productExamples.slice(0, 3).map((product) => {
@@ -403,11 +439,13 @@ function CalibrationCandidateCard({
         <View className="mt-2 gap-3">
           <ResolutionNodeDetails
             coverage={candidate.sourceMonographCoverage}
+            cpsCoverage={candidate.sourceCpsMonographCoverage}
             label="Source"
             node={candidate.resolvedSourceNode}
           />
           <ResolutionNodeDetails
             coverage={candidate.targetMonographCoverage}
+            cpsCoverage={candidate.targetCpsMonographCoverage}
             label="Target"
             node={candidate.resolvedTargetNode}
           />
@@ -716,9 +754,12 @@ function getNodeSourceLinks(
   node: NonNullable<PubMedInteractionCandidate["resolvedSourceNode"]>,
 ): Array<{ label: string; url: string }> {
   const drugCode = readIdentifierString(node.identifiers, "drug_code");
-  const cpsId =
-    readIdentifierString(node.identifiers, "cps_id") ??
-    readIdentifierString(node.identifiers, "dpd_keyref");
+  const caasType = readIdentifierString(node.identifiers, "caas_type");
+  const cpsId = readIdentifierString(node.identifiers, "cps_id");
+  const directCpsMonographId =
+    caasType === "MONOGRAPH" && cpsId && !cpsId.startsWith("dpd:")
+      ? cpsId
+      : null;
 
   return [
     drugCode
@@ -727,12 +768,10 @@ function getNodeSourceLinks(
           url: getHealthCanadaDpdUrl(drugCode),
         }
       : null,
-    cpsId || node.source === "CPS"
+    directCpsMonographId
       ? {
-          label: "Search CPS/e-CPS",
-          url: `https://www.e-therapeutics.ca/search?query=${encodeURIComponent(
-            node.canonicalName,
-          )}`,
+          label: "Open CPS monograph",
+          url: getCpsMonographUrl(directCpsMonographId),
         }
       : null,
     node.source === "HEALTH_CANADA_NOC"
@@ -758,6 +797,12 @@ function getHealthCanadaDpdUrl(drugCode: string) {
   return `https://health-products.canada.ca/dpd-bdpp/info.do?code=${encodeURIComponent(
     drugCode,
   )}&lang=en`;
+}
+
+function getCpsMonographUrl(cpsId: string) {
+  return `https://cps2.pharmacists.ca/document/monograph/${encodeURIComponent(
+    cpsId,
+  )}`;
 }
 
 function getNodeMetadataRows(
