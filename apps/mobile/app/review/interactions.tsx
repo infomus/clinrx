@@ -534,7 +534,7 @@ function CandidateCard({
         </Text>
         <TextInput
           className="mt-2 min-h-20 rounded-lg border border-ink/15 bg-white px-3 py-3 text-base leading-6 text-ink"
-          maxLength={500}
+          maxLength={2500}
           multiline
           onChangeText={setReviewerNote}
           placeholder="What did the AI get wrong?"

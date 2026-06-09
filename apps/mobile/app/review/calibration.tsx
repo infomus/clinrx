@@ -588,7 +588,7 @@ function CalibrationCandidateCard({
           </Text>
           <TextInput
             className="mt-2 min-h-20 rounded-lg border border-ink/15 bg-white px-3 py-3 text-base leading-6 text-ink"
-            maxLength={600}
+            maxLength={3000}
             multiline
             onChangeText={(notes) => setReview({ ...review, notes })}
             placeholder="What should we fix, trust, reject, or show next time?"
