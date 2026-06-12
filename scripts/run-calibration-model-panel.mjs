@@ -14,7 +14,12 @@ if (!supabaseUrl || !anonKey || !serviceRoleKey) {
 const setId = process.env.INTERACTION_EVALUATION_SET_ID ??
   "interaction-runtime-live-calibration";
 const limit = Number.parseInt(
-  process.env.INTERACTION_MODEL_PANEL_LIMIT ?? "5",
+  process.env.INTERACTION_MODEL_PANEL_LIMIT ?? "1",
+  10,
+);
+const scanLimit = Number.parseInt(
+  process.env.INTERACTION_MODEL_PANEL_SCAN_LIMIT ??
+    String(Math.max(limit * 10, 10)),
   10,
 );
 const models = (
@@ -24,6 +29,16 @@ const models = (
   .split(",")
   .map((model) => model.trim())
   .filter(Boolean);
+const retrievalStrategies = (
+  process.env.INTERACTION_RETRIEVAL_STRATEGIES ??
+    "monograph_direct_top8,monograph_direct_plus_pubmed_top10,monograph_plus_safety_top12,ingredient_product_class_guarded_top12"
+)
+  .split(",")
+  .map((strategy) => strategy.trim())
+  .filter(Boolean);
+const modelSet = new Set(models);
+const retrievalStrategySet = new Set(retrievalStrategies);
+const expectedMatrixCellCount = modelSet.size * retrievalStrategySet.size;
 
 let accessToken;
 let userId;
@@ -92,16 +107,61 @@ async function deleteTempUser() {
 
 async function loadRequests() {
   return rest(
-    `interaction_evaluation_request?select=id,input_source_text,input_target_text&set_id=eq.${encodeURIComponent(setId)}&order=created_at.asc&limit=${limit}`,
+    `interaction_evaluation_request?select=id,request_fingerprint,input_source_text,input_target_text&set_id=eq.${encodeURIComponent(setId)}&order=created_at.asc&limit=${scanLimit}`,
   );
 }
 
 async function loadLatestRun(requestId) {
   const rows = await rest(
-    `interaction_evaluation_run?select=resolved_source_id,resolved_target_id&request_id=eq.${encodeURIComponent(requestId)}&order=run_version.desc&limit=1`,
+    `interaction_evaluation_run?select=resolved_source_id,resolved_target_id&request_id=eq.${encodeURIComponent(requestId)}&resolved_source_id=not.is.null&resolved_target_id=not.is.null&order=run_version.desc&limit=1`,
   );
 
   return rows[0] ?? null;
+}
+
+async function loadExistingMatrixCellCount(requestId) {
+  const rows = await rest(
+    `interaction_evaluation_run?select=model,retrieval_strategy_version,run_version&request_id=eq.${encodeURIComponent(requestId)}&order=run_version.desc&limit=200`,
+  );
+  const cells = new Set();
+
+  for (const row of rows) {
+    if (
+      !modelSet.has(row.model) ||
+      !retrievalStrategySet.has(row.retrieval_strategy_version)
+    ) {
+      continue;
+    }
+
+    cells.add(`${row.retrieval_strategy_version}:${row.model}`);
+  }
+
+  return cells.size;
+}
+
+async function ensureRequestFingerprint(request) {
+  if (request.request_fingerprint) {
+    return request.request_fingerprint;
+  }
+
+  const requestFingerprint = `request:${request.id}`;
+  const updatedRows = await rest(
+    `interaction_evaluation_request?id=eq.${encodeURIComponent(request.id)}&select=id,request_fingerprint`,
+    {
+      body: JSON.stringify({ request_fingerprint: requestFingerprint }),
+      headers: {
+        Prefer: "return=representation",
+      },
+      label: `set request fingerprint for ${request.id}`,
+      method: "PATCH",
+    },
+  );
+
+  return updatedRows[0]?.request_fingerprint ?? requestFingerprint;
+}
+
+function pairFingerprint(leftId, rightId) {
+  return [leftId, rightId].sort().join(":");
 }
 
 async function runPanelForRequest(request) {
@@ -114,6 +174,21 @@ async function runPanelForRequest(request) {
     };
   }
 
+  const existingMatrixCellCount = await loadExistingMatrixCellCount(request.id);
+
+  if (existingMatrixCellCount >= expectedMatrixCellCount) {
+    return {
+      existingMatrixCellCount,
+      requestId: request.id,
+      skipped: "matrix already complete",
+    };
+  }
+
+  const requestFingerprint = await ensureRequestFingerprint(request);
+  const nodePairFingerprint = pairFingerprint(
+    run.resolved_source_id,
+    run.resolved_target_id,
+  );
   const started = Date.now();
   const response = await fetchJson("/functions/v1/check-interactions", {
     body: JSON.stringify({
@@ -121,11 +196,15 @@ async function runPanelForRequest(request) {
       aiInferenceMode: "on_miss_or_uncertain",
       calibrationModelPanel: true,
       calibrationModels: models,
+      calibrationRetrievalStrategies: retrievalStrategies,
       captureEvaluation: true,
       evaluationCaptureMode: "sync",
+      evaluationRequestFingerprints: {
+        [nodePairFingerprint]: requestFingerprint,
+      },
       evaluationSamplingReason: "manual",
       evaluationSetId: setId,
-      evaluationSetName: "Runtime model comparison calibration",
+      evaluationSetName: "Runtime model and retrieval strategy calibration",
       forceEvaluationCapture: true,
       inputLabels: {
         [run.resolved_source_id]: request.input_source_text,
@@ -143,7 +222,9 @@ async function runPanelForRequest(request) {
 
   return {
     durationMs: Date.now() - started,
+    models,
     requestId: request.id,
+    retrievalStrategies,
     runIds: response.evaluation?.runIds ?? [],
   };
 }
@@ -154,6 +235,10 @@ try {
   const results = [];
 
   for (const request of requests) {
+    if (results.filter((result) => !result.skipped).length >= limit) {
+      break;
+    }
+
     const result = await runPanelForRequest(request);
     results.push(result);
     console.log(JSON.stringify(result));

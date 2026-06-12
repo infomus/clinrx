@@ -38,8 +38,22 @@ type DraftInteractionLabel = Omit<
   InteractionEvaluationLabelInput,
   "requestId" | "reviewerId" | "reviewerKey" | "setId"
 >;
+type RuntimeRunItem = InteractionEvaluationRequestWithRun["runs"][number];
 
 const reviewerKey = "shared-password-reviewer";
+const activeMatrixModels = new Set([
+  "claude-opus-4-8",
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
+  "gpt-5.5",
+  "gpt-5.4-mini",
+]);
+const activeMatrixRetrievalStrategies = new Set([
+  "monograph_direct_top8",
+  "monograph_direct_plus_pubmed_top10",
+  "monograph_plus_safety_top12",
+  "ingredient_product_class_guarded_top12",
+]);
 
 export default function CalibrationReviewScreen() {
   return (
@@ -285,11 +299,15 @@ function RuntimeEvaluationCard({
   setLabel: (runId: string | null, label: DraftInteractionLabel) => void;
 }) {
   const { request } = item;
-  const runItems = item.runs.length
+  const [showAllRuns, setShowAllRuns] = useState(false);
+  const rawRunItems = item.runs.length
     ? item.runs
     : item.run
       ? [{ evidence: item.evidence, labels: item.labels, run: item.run }]
       : [];
+  const runItems = selectActiveMatrixRunItems(rawRunItems);
+  const prioritizedRunItems = selectPriorityRunItems(runItems);
+  const visibleRunItems = showAllRuns ? runItems : prioritizedRunItems;
 
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
@@ -319,7 +337,25 @@ function RuntimeEvaluationCard({
 
       {runItems.length ? (
         <View className="mt-4 gap-4">
-          {runItems.map((runItem) => {
+          <RunMatrixPanel items={runItems} />
+          {runItems.length > prioritizedRunItems.length ? (
+            <View className="flex-row flex-wrap items-center justify-between gap-3 rounded-lg border border-ink/10 bg-white px-3 py-2">
+              <Text className="text-sm leading-5 text-ink/60">
+                Showing {visibleRunItems.length} detailed run
+                {visibleRunItems.length === 1 ? "" : "s"} of {runItems.length}.
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                className="rounded-md border border-ink/10 bg-mist px-3 py-2"
+                onPress={() => setShowAllRuns((current) => !current)}
+              >
+                <Text className="text-xs font-semibold uppercase text-ink/70">
+                  {showAllRuns ? "Show priority" : "Show all details"}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {visibleRunItems.map((runItem) => {
             const labelKey = getLabelKey(request.id, runItem.run.id);
             const label =
               draftsByLabelKey[labelKey] ??
@@ -342,6 +378,58 @@ function RuntimeEvaluationCard({
           This request has not been run through the checker yet.
         </Text>
       )}
+    </View>
+  );
+}
+
+function RunMatrixPanel({ items }: { items: RuntimeRunItem[] }) {
+  const strategies = groupRunItemsByStrategy(items);
+
+  return (
+    <View className="rounded-lg border border-ink/10 bg-white p-3">
+      <Text className="text-sm font-semibold text-ink">
+        Retrieval x model matrix
+      </Text>
+      <View className="mt-3 gap-3">
+        {strategies.map(([strategy, strategyItems]) => (
+          <View key={strategy}>
+            <Text className="text-xs font-semibold uppercase text-ink/50">
+              {formatStrategyName(strategy)}
+            </Text>
+            <View className="mt-2 flex-row flex-wrap gap-2">
+              {strategyItems.map(({ run }) => (
+                <RunMatrixChip key={run.id} run={run} />
+              ))}
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function RunMatrixChip({ run }: { run: RuntimeRunItem["run"] }) {
+  const latencyMs = getTraceNumber(
+    run.decisionTrace as Record<string, unknown>,
+    "latencyMs",
+  );
+  const category = run.answerCategory ?? "unclear";
+  const styles = matrixCategoryStyles[category] ?? matrixCategoryStyles.unclear;
+
+  return (
+    <View className={`min-w-36 rounded-lg border px-3 py-2 ${styles.container}`}>
+      <Text className={`text-xs font-bold uppercase ${styles.text}`}>
+        {formatModelName(run.model)}
+      </Text>
+      <Text className={`mt-1 text-xs font-semibold uppercase ${styles.text}`}>
+        {run.status === "completed" ? formatLabel(category) : formatLabel(run.status)}
+      </Text>
+      <Text className={`mt-1 text-xs ${styles.text}`}>
+        {run.confidence !== null && run.confidence !== undefined
+          ? `${Math.round(run.confidence * 100)}%`
+          : "No confidence"}
+        {latencyMs !== null ? ` • ${formatLatency(latencyMs)}` : ""}
+      </Text>
     </View>
   );
 }
@@ -369,6 +457,9 @@ function ModelRunEvaluation({
         <View className="flex-row flex-wrap items-center gap-2">
           <Text className="text-sm font-semibold text-ink">
             {formatModelName(run.model)}
+          </Text>
+          <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+            {formatStrategyName(run.retrievalStrategyVersion)}
           </Text>
           {run.status !== "completed" ? (
             <Text className="rounded-md bg-coral/10 px-2 py-1 text-xs font-semibold uppercase text-coral">
@@ -932,7 +1023,7 @@ function calculateMetrics(
   savedLabelsByKey: Map<string, InteractionEvaluationLabel>,
 ): RuntimeMetrics {
   const runItems = items.flatMap((item) =>
-    item.runs.map((runItem) => ({
+    selectActiveMatrixRunItems(item.runs).map((runItem) => ({
       requestId: item.request.id,
       runItem,
     }))
@@ -1058,6 +1149,146 @@ function formatModelName(model?: string | null): string {
   }
 }
 
+function formatStrategyName(strategy?: string | null): string {
+  switch (strategy) {
+    case "monograph_direct_top8":
+      return "Monograph direct top 8";
+    case "monograph_direct_plus_pubmed_top10":
+    case "indexed-monograph-pubmed-runtime-v1":
+      return "Monograph + PubMed top 10";
+    case "monograph_plus_safety_top12":
+      return "Monograph + safety top 12";
+    case "ingredient_product_class_guarded_top12":
+      return "Ingredient/product/class guarded top 12";
+    case "published-kg-runtime-v1":
+      return "Published KG";
+    default:
+      return strategy ? formatLabel(strategy) : "Unknown retrieval";
+  }
+}
+
+function groupRunItemsByStrategy(
+  items: RuntimeRunItem[],
+): Array<[string, RuntimeRunItem[]]> {
+  const groups = new Map<string, RuntimeRunItem[]>();
+
+  for (const item of items) {
+    const strategy = item.run.retrievalStrategyVersion ?? "unknown";
+    groups.set(strategy, [...(groups.get(strategy) ?? []), item]);
+  }
+
+  return [...groups.entries()].sort(
+    ([left], [right]) => strategySortRank(left) - strategySortRank(right),
+  );
+}
+
+function selectActiveMatrixRunItems(items: RuntimeRunItem[]): RuntimeRunItem[] {
+  const matrixItems = items.filter(isActiveMatrixRunItem);
+  return matrixItems.length ? matrixItems : items;
+}
+
+function isActiveMatrixRunItem(item: RuntimeRunItem): boolean {
+  return activeMatrixRetrievalStrategies.has(
+      item.run.retrievalStrategyVersion,
+    ) &&
+    activeMatrixModels.has(item.run.model ?? "");
+}
+
+function selectPriorityRunItems(items: RuntimeRunItem[]): RuntimeRunItem[] {
+  if (items.length <= 4) {
+    return items;
+  }
+
+  const selected = new Map<string, RuntimeRunItem>();
+  const addFirst = (
+    predicate: (item: RuntimeRunItem) => boolean,
+  ) => {
+    const item = items.find(predicate);
+
+    if (item) {
+      selected.set(item.run.id, item);
+    }
+  };
+
+  addFirst((item) => item.run.status !== "completed");
+  addFirst((item) =>
+    item.run.model === "claude-opus-4-8" &&
+    item.run.retrievalStrategyVersion === "monograph_direct_plus_pubmed_top10"
+  );
+  addFirst((item) =>
+    item.run.model === "gpt-5.5" &&
+    item.run.retrievalStrategyVersion === "monograph_direct_plus_pubmed_top10"
+  );
+  addFirst((item) =>
+    item.run.model === "gpt-5.4-mini" &&
+    item.run.retrievalStrategyVersion === "monograph_direct_top8"
+  );
+  addFirst((item) =>
+    item.run.model === "claude-haiku-4-5-20251001" &&
+    item.run.retrievalStrategyVersion ===
+      "ingredient_product_class_guarded_top12"
+  );
+
+  for (const item of [...items].sort(compareRunItemsForPriority)) {
+    if (selected.size >= 4) {
+      break;
+    }
+
+    selected.set(item.run.id, item);
+  }
+
+  return [...selected.values()].slice(0, 4);
+}
+
+function compareRunItemsForPriority(
+  left: RuntimeRunItem,
+  right: RuntimeRunItem,
+): number {
+  return Number(left.run.status === "completed") -
+      Number(right.run.status === "completed") ||
+    strategySortRank(left.run.retrievalStrategyVersion) -
+      strategySortRank(right.run.retrievalStrategyVersion) ||
+    modelSortRank(left.run.model) - modelSortRank(right.run.model);
+}
+
+function strategySortRank(strategy?: string | null): number {
+  switch (strategy) {
+    case "monograph_direct_top8":
+      return 0;
+    case "monograph_direct_plus_pubmed_top10":
+    case "indexed-monograph-pubmed-runtime-v1":
+      return 1;
+    case "monograph_plus_safety_top12":
+      return 2;
+    case "ingredient_product_class_guarded_top12":
+      return 3;
+    case "published-kg-runtime-v1":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
+function modelSortRank(model?: string | null): number {
+  switch (model) {
+    case "claude-opus-4-8":
+      return 0;
+    case "claude-sonnet-4-6":
+      return 1;
+    case "claude-haiku-4-5-20251001":
+    case "claude-haiku-4-5":
+      return 2;
+    case "gpt-5.5":
+      return 3;
+    case "gpt-5.4-mini":
+      return 4;
+    case "deterministic-published-kg-lookup":
+      return 5;
+    default:
+      return 6;
+  }
+}
+
 function getLabelKey(requestId: string, runId: string | null): string {
   return `${requestId}:${runId ?? "no-run"}`;
 }
@@ -1125,6 +1356,36 @@ const categoryStyles: Record<InteractionEvaluationCategory, string> = {
   no_action_needed: "border-blue-200 bg-blue-50 text-blue-700",
   no_known_interaction: "border-green-200 bg-green-50 text-green-700",
   unclear: "border-ink/10 bg-white text-ink/60",
+};
+
+const matrixCategoryStyles: Record<
+  InteractionEvaluationCategory,
+  { container: string; text: string }
+> = {
+  avoid_combination: {
+    container: "border-red-200 bg-red-50",
+    text: "text-red-700",
+  },
+  consider_therapy_modification: {
+    container: "border-orange-200 bg-orange-50",
+    text: "text-orange-700",
+  },
+  monitor_therapy: {
+    container: "border-yellow-200 bg-yellow-50",
+    text: "text-yellow-700",
+  },
+  no_action_needed: {
+    container: "border-blue-200 bg-blue-50",
+    text: "text-blue-700",
+  },
+  no_known_interaction: {
+    container: "border-green-200 bg-green-50",
+    text: "text-green-700",
+  },
+  unclear: {
+    container: "border-ink/10 bg-mist",
+    text: "text-ink/60",
+  },
 };
 
 const entityResolutionOptions: Array<{

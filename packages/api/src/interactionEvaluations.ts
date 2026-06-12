@@ -363,8 +363,28 @@ function compareEvaluationRuns(
   left: InteractionEvaluationRun,
   right: InteractionEvaluationRun,
 ): number {
-  return modelSortRank(left.model) - modelSortRank(right.model) ||
+  return strategySortRank(left.retrievalStrategyVersion) -
+      strategySortRank(right.retrievalStrategyVersion) ||
+    modelSortRank(left.model) - modelSortRank(right.model) ||
     right.runVersion - left.runVersion;
+}
+
+function strategySortRank(strategy?: string | null): number {
+  switch (strategy) {
+    case "monograph_direct_top8":
+      return 0;
+    case "monograph_direct_plus_pubmed_top10":
+    case "indexed-monograph-pubmed-runtime-v1":
+      return 1;
+    case "monograph_plus_safety_top12":
+      return 2;
+    case "ingredient_product_class_guarded_top12":
+      return 3;
+    case "published-kg-runtime-v1":
+      return 4;
+    default:
+      return 5;
+  }
 }
 
 function modelSortRank(model?: string | null): number {

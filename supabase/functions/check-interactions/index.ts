@@ -13,7 +13,9 @@ interface CheckInteractionsRequest {
   captureEvaluation?: unknown;
   calibrationModelPanel?: unknown;
   calibrationModels?: unknown;
+  calibrationRetrievalStrategies?: unknown;
   evaluationCaptureMode?: unknown;
+  evaluationRequestFingerprints?: unknown;
   evaluationSamplingReason?: unknown;
   evaluationSampleRate?: unknown;
   evaluationSetId?: unknown;
@@ -221,6 +223,13 @@ type InteractionSeverity =
 
 type RuntimeModelProvider = "anthropic" | "openai";
 
+type RuntimeRetrievalStrategyId =
+  | "monograph_direct_top8"
+  | "monograph_direct_plus_pubmed_top10"
+  | "monograph_plus_safety_top12"
+  | "ingredient_product_class_guarded_top12"
+  | "indexed-monograph-pubmed-runtime-v1";
+
 type RuntimeStructuredOutputMethod =
   | "anthropic_tool_use"
   | "anthropic_json_text"
@@ -229,6 +238,15 @@ type RuntimeStructuredOutputMethod =
 interface RuntimeAiProviderKeys {
   anthropicApiKey?: string;
   openaiApiKey?: string;
+}
+
+interface RuntimeRetrievalStrategyConfig {
+  id: RuntimeRetrievalStrategyId;
+  includePubMed: boolean;
+  includeSafetyFallback: boolean;
+  monographPerSourceLimit: number;
+  pubMedLimit: number;
+  topK: number;
 }
 
 const defaultEvaluationSetId = "interaction-runtime-live-calibration";
@@ -242,9 +260,61 @@ const defaultCalibrationModelPanel = [
   "gpt-5.5",
   "gpt-5.4-mini",
 ];
+const defaultCalibrationRetrievalStrategyPanel: RuntimeRetrievalStrategyId[] = [
+  "monograph_direct_top8",
+  "monograph_direct_plus_pubmed_top10",
+  "monograph_plus_safety_top12",
+  "ingredient_product_class_guarded_top12",
+];
 const defaultResultCacheTtlSeconds = 86400;
-const interactionAiPromptVersion = "interaction-runtime-ai-v1";
-const interactionAiRetrievalStrategyVersion = "indexed-monograph-pubmed-runtime-v1";
+const interactionAiPromptVersion = "interaction-runtime-ai-v2";
+const interactionAiRetrievalStrategyVersion: RuntimeRetrievalStrategyId =
+  "monograph_direct_plus_pubmed_top10";
+const runtimeRetrievalStrategyConfigs: Record<
+  RuntimeRetrievalStrategyId,
+  RuntimeRetrievalStrategyConfig
+> = {
+  "indexed-monograph-pubmed-runtime-v1": {
+    id: "indexed-monograph-pubmed-runtime-v1",
+    includePubMed: true,
+    includeSafetyFallback: false,
+    monographPerSourceLimit: 4,
+    pubMedLimit: 2,
+    topK: 10,
+  },
+  ingredient_product_class_guarded_top12: {
+    id: "ingredient_product_class_guarded_top12",
+    includePubMed: true,
+    includeSafetyFallback: true,
+    monographPerSourceLimit: 4,
+    pubMedLimit: 4,
+    topK: 12,
+  },
+  monograph_direct_plus_pubmed_top10: {
+    id: "monograph_direct_plus_pubmed_top10",
+    includePubMed: true,
+    includeSafetyFallback: false,
+    monographPerSourceLimit: 4,
+    pubMedLimit: 2,
+    topK: 10,
+  },
+  monograph_direct_top8: {
+    id: "monograph_direct_top8",
+    includePubMed: false,
+    includeSafetyFallback: false,
+    monographPerSourceLimit: 4,
+    pubMedLimit: 0,
+    topK: 8,
+  },
+  monograph_plus_safety_top12: {
+    id: "monograph_plus_safety_top12",
+    includePubMed: false,
+    includeSafetyFallback: true,
+    monographPerSourceLimit: 6,
+    pubMedLimit: 0,
+    topK: 12,
+  },
+};
 const enzymePattern =
   /\b(?:CYP\s*[-]?\s*\d[A-Z]?\d?|CYP\d[A-Z]\d|UGT\d[A-Z0-9]*|cytochrome\s+P450)\b/gi;
 const transporterPattern =
@@ -337,6 +407,9 @@ Deno.serve(async (request) => {
       calibrationModels: body.calibrationModelPanel === true
         ? getCalibrationModels(body.calibrationModels, interactionAiModel)
         : [],
+      calibrationRetrievalStrategies: body.calibrationModelPanel === true
+        ? getCalibrationRetrievalStrategies(body.calibrationRetrievalStrategies)
+        : [interactionAiRetrievalStrategyVersion],
       inputLabels,
       interactionAiModel,
       nodeIds: nodeIds as string[],
@@ -387,6 +460,9 @@ Deno.serve(async (request) => {
       evaluationSetId,
       evaluationSetName: getOptionalString(body.evaluationSetName) ??
         defaultEvaluationSetName,
+      requestFingerprints: parseEvaluationRequestFingerprints(
+        body.evaluationRequestFingerprints,
+      ),
       inputLabels,
       interactions: checkResult.evaluationInteractions ?? interactions,
       lookupDurationMs,
@@ -459,6 +535,7 @@ async function checkInteractionsWithCache({
   aiInferenceMode,
   adminClient,
   calibrationModels,
+  calibrationRetrievalStrategies,
   inputLabels,
   interactionAiModel,
   nodeIds,
@@ -472,6 +549,7 @@ async function checkInteractionsWithCache({
   aiInferenceMode: "always" | "on_miss_or_uncertain";
   adminClient: ReturnType<typeof createClient>;
   calibrationModels: string[];
+  calibrationRetrievalStrategies: RuntimeRetrievalStrategyId[];
   inputLabels: Record<string, string>;
   interactionAiModel: string;
   nodeIds: string[];
@@ -505,6 +583,7 @@ async function checkInteractionsWithCache({
       aiCacheTtlSeconds,
       adminClient,
       calibrationModels,
+      calibrationRetrievalStrategies,
       deterministicInteractions,
       graphVersion,
       inputLabels,
@@ -887,6 +966,7 @@ async function augmentWithRuntimeAiInference({
       graphVersion: resolvedGraphVersion,
       interactionAiModel,
       pairFingerprints,
+      retrievalStrategyVersion: interactionAiRetrievalStrategyVersion,
     })
     : new Map<string, InteractionRpcRow[]>();
   const aiRowsByPair = new Map<string, InteractionRpcRow[]>(
@@ -911,6 +991,7 @@ async function augmentWithRuntimeAiInference({
       adminClient,
       nodesById,
       pairs: missingPairs,
+      strategy: interactionAiRetrievalStrategyVersion,
     });
 
     for (const [leftId, rightId] of missingPairs) {
@@ -921,10 +1002,13 @@ async function augmentWithRuntimeAiInference({
       const rightLabel = inputLabels[rightId] ?? rightNode?.canonical_name ??
         rightId;
       const deterministicRows = deterministicByPair.get(fingerprint) ?? [];
+      const retrievalStrategyConfig = getRuntimeRetrievalStrategyConfig(
+        interactionAiRetrievalStrategyVersion,
+      );
       const evidenceRows = rerankEvidenceRows([
         ...buildEvidenceRows(deterministicRows),
         ...(retrievedEvidenceByPair.get(fingerprint) ?? []),
-      ]).slice(0, 18);
+      ]).slice(0, retrievalStrategyConfig.topK);
       const substantiveEvidence = evidenceRows.filter(
         (row) =>
           row.source_kind !== "kg_edge" ||
@@ -952,6 +1036,7 @@ async function augmentWithRuntimeAiInference({
           leftNode,
           rightNode,
           pairFingerprint: fingerprint,
+          retrievalStrategyVersion: interactionAiRetrievalStrategyVersion,
         });
 
         aiRowsByPair.set(fingerprint, [interactionRow]);
@@ -966,6 +1051,7 @@ async function augmentWithRuntimeAiInference({
               graphVersion: resolvedGraphVersion,
               interactionAiModel,
               pairFingerprint: fingerprint,
+              retrievalStrategyVersion: interactionAiRetrievalStrategyVersion,
               rows: [interactionRow],
             }).catch((cacheError) => {
               console.error("Failed to write runtime AI cache", {
@@ -1020,6 +1106,7 @@ async function buildCalibrationModelPanel({
   aiCacheTtlSeconds,
   adminClient,
   calibrationModels,
+  calibrationRetrievalStrategies,
   deterministicInteractions,
   graphVersion,
   inputLabels,
@@ -1033,6 +1120,7 @@ async function buildCalibrationModelPanel({
   aiCacheTtlSeconds: number;
   adminClient: ReturnType<typeof createClient>;
   calibrationModels: string[];
+  calibrationRetrievalStrategies: RuntimeRetrievalStrategyId[];
   deterministicInteractions: InteractionRpcRow[];
   graphVersion: string | null;
   inputLabels: Record<string, string>;
@@ -1051,7 +1139,12 @@ async function buildCalibrationModelPanel({
   };
   interactions: InteractionRpcRow[];
 } | null> {
-  if (!retrieveRuntimeEvidence || !pairs.length || !calibrationModels.length) {
+  if (
+    !retrieveRuntimeEvidence ||
+    !pairs.length ||
+    !calibrationModels.length ||
+    !calibrationRetrievalStrategies.length
+  ) {
     return null;
   }
 
@@ -1063,45 +1156,63 @@ async function buildCalibrationModelPanel({
     pairFingerprint(leftId, rightId)
   );
   const deterministicByPair = groupInteractionsByPair(deterministicInteractions);
-  const seededRowsByModelPair = groupRuntimeAiRowsByModelPair(seedInteractions);
-  const cachedRowsByModelPair = new Map<string, InteractionRpcRow[]>();
+  const seededRowsByModelStrategyPair =
+    groupRuntimeAiRowsByModelStrategyPair(seedInteractions);
+  const cachedRowsByModelStrategyPair = new Map<string, InteractionRpcRow[]>();
   let calibrationAiHitCount = 0;
   let calibrationAiMissCount = 0;
 
   if (useResultCache && resolvedGraphVersion && evidenceVersion) {
     await Promise.all(
-      calibrationModels.map(async (model) => {
-        const cachedByPair = await getCachedAiResults({
-          adminClient,
-          evidenceVersion,
-          graphVersion: resolvedGraphVersion,
-          interactionAiModel: model,
-          pairFingerprints,
-        });
+      calibrationRetrievalStrategies.flatMap((retrievalStrategyVersion) =>
+        calibrationModels.map(async (model) => {
+          const cachedByPair = await getCachedAiResults({
+            adminClient,
+            evidenceVersion,
+            graphVersion: resolvedGraphVersion,
+            interactionAiModel: model,
+            pairFingerprints,
+            retrievalStrategyVersion,
+          });
 
-        for (const [fingerprint, rows] of cachedByPair.entries()) {
-          cachedRowsByModelPair.set(modelPairKey(model, fingerprint), rows);
-        }
+          for (const [fingerprint, rows] of cachedByPair.entries()) {
+            cachedRowsByModelStrategyPair.set(
+              modelStrategyPairKey(model, retrievalStrategyVersion, fingerprint),
+              rows,
+            );
+          }
 
-        calibrationAiHitCount += cachedByPair.size;
-      }),
+          calibrationAiHitCount += cachedByPair.size;
+        })
+      ),
     );
   }
 
   const missingModelPairs = pairs.flatMap(([leftId, rightId]) => {
     const fingerprint = pairFingerprint(leftId, rightId);
 
-    return calibrationModels.flatMap((model) =>
-      seededRowsByModelPair.has(modelPairKey(model, fingerprint)) ||
-        cachedRowsByModelPair.has(modelPairKey(model, fingerprint))
-        ? []
-        : [{ fingerprint, leftId, model, rightId }]
+    return calibrationRetrievalStrategies.flatMap((retrievalStrategyVersion) =>
+      calibrationModels.flatMap((model) => {
+        const key = modelStrategyPairKey(
+          model,
+          retrievalStrategyVersion,
+          fingerprint,
+        );
+
+        return seededRowsByModelStrategyPair.has(key) ||
+            cachedRowsByModelStrategyPair.has(key)
+          ? []
+          : [{ fingerprint, leftId, model, retrievalStrategyVersion, rightId }];
+      })
     );
   });
 
   calibrationAiMissCount = missingModelPairs.length;
 
-  const generatedRowsByModelPair = new Map<string, InteractionRpcRow[]>();
+  const generatedRowsByModelStrategyPair = new Map<
+    string,
+    InteractionRpcRow[]
+  >();
 
   if (missingModelPairs.length) {
     const nodesById = await getKgNodesById(adminClient, nodeIds);
@@ -1113,23 +1224,55 @@ async function buildCalibrationModelPanel({
         ]),
       ).values(),
     ];
-    const retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
-      adminClient,
-      nodesById,
-      pairs: missingPairs,
-    });
+    const retrievedEvidenceByStrategyPair = new Map<
+      string,
+      RuntimeEvidenceRow[]
+    >();
 
-    for (const { fingerprint, leftId, model, rightId } of missingModelPairs) {
+    await Promise.all(
+      [...new Set(
+        missingModelPairs.map((item) => item.retrievalStrategyVersion),
+      )].map(async (retrievalStrategyVersion) => {
+        const retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
+          adminClient,
+          nodesById,
+          pairs: missingPairs,
+          strategy: retrievalStrategyVersion,
+        });
+
+        for (const [fingerprint, rows] of retrievedEvidenceByPair.entries()) {
+          retrievedEvidenceByStrategyPair.set(
+            strategyPairKey(retrievalStrategyVersion, fingerprint),
+            rows,
+          );
+        }
+      }),
+    );
+
+    for (
+      const {
+        fingerprint,
+        leftId,
+        model,
+        retrievalStrategyVersion,
+        rightId,
+      } of missingModelPairs
+    ) {
       const leftNode = nodesById.get(leftId);
       const rightNode = nodesById.get(rightId);
       const leftLabel = inputLabels[leftId] ?? leftNode?.canonical_name ??
         leftId;
       const rightLabel = inputLabels[rightId] ?? rightNode?.canonical_name ??
         rightId;
+      const retrievalStrategyConfig = getRuntimeRetrievalStrategyConfig(
+        retrievalStrategyVersion,
+      );
       const evidenceRows = rerankEvidenceRows([
         ...buildEvidenceRows(deterministicByPair.get(fingerprint) ?? []),
-        ...(retrievedEvidenceByPair.get(fingerprint) ?? []),
-      ]).slice(0, 18);
+        ...(retrievedEvidenceByStrategyPair.get(
+          strategyPairKey(retrievalStrategyVersion, fingerprint),
+        ) ?? []),
+      ]).slice(0, retrievalStrategyConfig.topK);
       const substantiveEvidence = evidenceRows.filter(
         (row) =>
           row.source_kind !== "kg_edge" ||
@@ -1137,6 +1280,44 @@ async function buildCalibrationModelPanel({
       );
 
       if (!substantiveEvidence.length) {
+        const interactionRow = buildRuntimeAiNoEvidenceRow({
+          evidenceRows,
+          interactionAiModel: model,
+          leftId,
+          rightId,
+          leftNode,
+          rightNode,
+          pairFingerprint: fingerprint,
+          retrievalStrategyVersion,
+        });
+
+        generatedRowsByModelStrategyPair.set(
+          modelStrategyPairKey(model, retrievalStrategyVersion, fingerprint),
+          [interactionRow],
+        );
+
+        if (useResultCache && resolvedGraphVersion && evidenceVersion) {
+          scheduleBackgroundTask(
+            upsertRuntimeAiCache({
+              adminClient,
+              aiCacheTtlSeconds,
+              evidenceRows,
+              evidenceVersion,
+              graphVersion: resolvedGraphVersion,
+              interactionAiModel: model,
+              pairFingerprint: fingerprint,
+              retrievalStrategyVersion,
+              rows: [interactionRow],
+            }).catch((cacheError) => {
+              console.error("Failed to write no-evidence calibration AI cache", {
+                error: cacheError instanceof Error
+                  ? cacheError.message
+                  : String(cacheError),
+              });
+            }),
+          );
+        }
+
         continue;
       }
 
@@ -1168,11 +1349,13 @@ async function buildCalibrationModelPanel({
           leftNode,
           rightNode,
           pairFingerprint: fingerprint,
+          retrievalStrategyVersion,
         });
 
-        generatedRowsByModelPair.set(modelPairKey(model, fingerprint), [
-          interactionRow,
-        ]);
+        generatedRowsByModelStrategyPair.set(
+          modelStrategyPairKey(model, retrievalStrategyVersion, fingerprint),
+          [interactionRow],
+        );
 
         if (useResultCache && resolvedGraphVersion && evidenceVersion) {
           scheduleBackgroundTask(
@@ -1184,6 +1367,7 @@ async function buildCalibrationModelPanel({
               graphVersion: resolvedGraphVersion,
               interactionAiModel: model,
               pairFingerprint: fingerprint,
+              retrievalStrategyVersion,
               rows: [interactionRow],
             }).catch((cacheError) => {
               console.error("Failed to write calibration runtime AI cache", {
@@ -1199,20 +1383,47 @@ async function buildCalibrationModelPanel({
           error: aiError instanceof Error ? aiError.message : String(aiError),
           model,
           pairFingerprint: fingerprint,
+          retrievalStrategyVersion,
         });
-        generatedRowsByModelPair.set(modelPairKey(model, fingerprint), [
-          buildRuntimeAiFailureRow({
-            error: aiError,
-            evidenceRows,
-            interactionAiModel: model,
-            latencyMs: Date.now() - assessmentStartedAt,
-            leftId,
-            rightId,
-            leftNode,
-            rightNode,
-            pairFingerprint: fingerprint,
-          }),
-        ]);
+        const failureRow = buildRuntimeAiFailureRow({
+          error: aiError,
+          evidenceRows,
+          interactionAiModel: model,
+          latencyMs: Date.now() - assessmentStartedAt,
+          leftId,
+          rightId,
+          leftNode,
+          rightNode,
+          pairFingerprint: fingerprint,
+          retrievalStrategyVersion,
+        });
+
+        generatedRowsByModelStrategyPair.set(
+          modelStrategyPairKey(model, retrievalStrategyVersion, fingerprint),
+          [failureRow],
+        );
+
+        if (useResultCache && resolvedGraphVersion && evidenceVersion) {
+          scheduleBackgroundTask(
+            upsertRuntimeAiCache({
+              adminClient,
+              aiCacheTtlSeconds,
+              evidenceRows,
+              evidenceVersion,
+              graphVersion: resolvedGraphVersion,
+              interactionAiModel: model,
+              pairFingerprint: fingerprint,
+              retrievalStrategyVersion,
+              rows: [failureRow],
+            }).catch((cacheError) => {
+              console.error("Failed to write failed calibration AI cache", {
+                error: cacheError instanceof Error
+                  ? cacheError.message
+                  : String(cacheError),
+              });
+            }),
+          );
+        }
       }
     }
   }
@@ -1220,11 +1431,19 @@ async function buildCalibrationModelPanel({
   const interactions = pairs.flatMap(([leftId, rightId]) => {
     const fingerprint = pairFingerprint(leftId, rightId);
 
-    return calibrationModels.flatMap((model) =>
-      seededRowsByModelPair.get(modelPairKey(model, fingerprint)) ??
-        cachedRowsByModelPair.get(modelPairKey(model, fingerprint)) ??
-        generatedRowsByModelPair.get(modelPairKey(model, fingerprint)) ??
-        []
+    return calibrationRetrievalStrategies.flatMap((retrievalStrategyVersion) =>
+      calibrationModels.flatMap((model) => {
+        const key = modelStrategyPairKey(
+          model,
+          retrievalStrategyVersion,
+          fingerprint,
+        );
+
+        return seededRowsByModelStrategyPair.get(key) ??
+          cachedRowsByModelStrategyPair.get(key) ??
+          generatedRowsByModelStrategyPair.get(key) ??
+          [];
+      })
     );
   });
 
@@ -1262,12 +1481,14 @@ async function getCachedAiResults({
   graphVersion,
   interactionAiModel,
   pairFingerprints,
+  retrievalStrategyVersion,
 }: {
   adminClient: ReturnType<typeof createClient>;
   evidenceVersion: string;
   graphVersion: string;
   interactionAiModel: string;
   pairFingerprints: string[];
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId;
 }): Promise<Map<string, InteractionRpcRow[]>> {
   const cachedByPair = new Map<string, InteractionRpcRow[]>();
 
@@ -1281,7 +1502,7 @@ async function getCachedAiResults({
     .eq("engine", "ai_evidence_inference")
     .eq("graph_version", graphVersion)
     .eq("evidence_version", evidenceVersion)
-    .eq("retrieval_strategy_version", interactionAiRetrievalStrategyVersion)
+    .eq("retrieval_strategy_version", retrievalStrategyVersion)
     .eq("prompt_version", interactionAiPromptVersion)
     .eq("model", interactionAiModel)
     .in("pair_fingerprint", pairFingerprints)
@@ -1312,6 +1533,7 @@ async function upsertRuntimeAiCache({
   graphVersion,
   interactionAiModel,
   pairFingerprint,
+  retrievalStrategyVersion,
   rows,
 }: {
   adminClient: ReturnType<typeof createClient>;
@@ -1321,6 +1543,7 @@ async function upsertRuntimeAiCache({
   graphVersion: string;
   interactionAiModel: string;
   pairFingerprint: string;
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId;
   rows: InteractionRpcRow[];
 }): Promise<void> {
   const answer = rows[0]?.interaction;
@@ -1334,7 +1557,7 @@ async function upsertRuntimeAiCache({
         answer_category: answer?.actionCategory ?? null,
         answer_summary: answer?.mechanism ?? null,
         cache_key:
-          `ai_evidence_inference:${interactionAiRetrievalStrategyVersion}:${interactionAiPromptVersion}:${interactionAiModel}:${graphVersion}:${evidenceVersion}:${pairFingerprint}`,
+          `ai_evidence_inference:${retrievalStrategyVersion}:${interactionAiPromptVersion}:${interactionAiModel}:${graphVersion}:${evidenceVersion}:${pairFingerprint}`,
         confidence: getTraceConfidence(answer?.aiDecisionTrace),
         decision_trace: answer?.aiDecisionTrace ?? {},
         engine: "ai_evidence_inference",
@@ -1354,7 +1577,7 @@ async function upsertRuntimeAiCache({
         response: {
           interactions: rows,
         },
-        retrieval_strategy_version: interactionAiRetrievalStrategyVersion,
+        retrieval_strategy_version: retrievalStrategyVersion,
       },
       { onConflict: "cache_key" },
     );
@@ -1843,6 +2066,7 @@ function buildRuntimeAiInteractionRow({
   leftId,
   leftNode,
   pairFingerprint,
+  retrievalStrategyVersion,
   rightId,
   rightNode,
 }: {
@@ -1852,6 +2076,7 @@ function buildRuntimeAiInteractionRow({
   leftId: string;
   leftNode?: KgNodeRow;
   pairFingerprint: string;
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId;
   rightId: string;
   rightNode?: KgNodeRow;
 }): InteractionRpcRow {
@@ -1884,7 +2109,7 @@ function buildRuntimeAiInteractionRow({
         promptVersion: interactionAiPromptVersion,
         retrievalNotes:
           "Runtime AI assessment over indexed CPS/Health Canada/PubMed evidence only.",
-        retrievalStrategyVersion: interactionAiRetrievalStrategyVersion,
+        retrievalStrategyVersion,
         structuredOutputMethod: answer.structuredOutputMethod,
         structuredOutputRetryCount: answer.structuredOutputRetryCount,
         uncertainty: answer.uncertainty,
@@ -1912,6 +2137,7 @@ function buildRuntimeAiFailureRow({
   leftId,
   leftNode,
   pairFingerprint,
+  retrievalStrategyVersion,
   rightId,
   rightNode,
 }: {
@@ -1922,6 +2148,7 @@ function buildRuntimeAiFailureRow({
   leftId: string;
   leftNode?: KgNodeRow;
   pairFingerprint: string;
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId;
   rightId: string;
   rightNode?: KgNodeRow;
 }): InteractionRpcRow {
@@ -1948,7 +2175,7 @@ function buildRuntimeAiFailureRow({
         promptVersion: interactionAiPromptVersion,
         retrievalNotes:
           "Runtime AI assessment failed after evidence retrieval; prompt evidence is preserved for calibration review.",
-        retrievalStrategyVersion: interactionAiRetrievalStrategyVersion,
+        retrievalStrategyVersion,
         runtimeError: errorMessage,
         runtimeStatus: "failed",
         uncertainty: [
@@ -1970,6 +2197,77 @@ function buildRuntimeAiFailureRow({
   };
 }
 
+function buildRuntimeAiNoEvidenceRow({
+  evidenceRows,
+  interactionAiModel,
+  leftId,
+  leftNode,
+  pairFingerprint,
+  retrievalStrategyVersion,
+  rightId,
+  rightNode,
+}: {
+  evidenceRows: RuntimeEvidenceRow[];
+  interactionAiModel: string;
+  leftId: string;
+  leftNode?: KgNodeRow;
+  pairFingerprint: string;
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId;
+  rightId: string;
+  rightNode?: KgNodeRow;
+}): InteractionRpcRow {
+  const promptEvidence = evidenceRows.map(toPromptEvidence);
+  const usedEvidenceIds = promptEvidence[0]?.id ? [promptEvidence[0].id] : [];
+
+  return {
+    input_pair: [leftId, rightId],
+    matched_via: {
+      leftNodeId: leftId,
+      rightNodeId: rightId,
+    },
+    interaction: {
+      actionCategory: "no_known_interaction",
+      aiDecisionTrace: {
+        chunkAssessments: promptEvidence.map((evidence) => ({
+          chunkId: evidence.chunk_id ?? evidence.source_id ?? undefined,
+          conclusion: evidence.content,
+          promptEvidenceId: evidence.id,
+          quote: evidence.quote,
+          sourceKind: evidence.source_kind,
+          supportType: evidence.support_type,
+        })),
+        confidence: 0,
+        evidenceSupport: "insufficient",
+        finalRationale:
+          "This retrieval strategy did not return substantive evidence beyond a source-silent KG placeholder, so no model inference was run for this calibration cell.",
+        latencyMs: 0,
+        model: interactionAiModel,
+        promptEvidence,
+        promptVersion: interactionAiPromptVersion,
+        retrievalNotes:
+          "Calibration no-evidence result: retrieval produced no substantive CPS, Health Canada, PubMed, or published KG evidence for this strategy.",
+        retrievalStrategyVersion,
+        runtimeStatus: "no_evidence",
+        uncertainty: [
+          "No substantive evidence was retrieved for this model-strategy calibration cell.",
+        ],
+        usedEvidenceIds,
+      },
+      citations: [],
+      evidenceLevel: "runtime_ai:insufficient",
+      id:
+        `runtime-ai-no-evidence:${pairFingerprint}:${interactionAiModel}:${retrievalStrategyVersion}:${crypto.randomUUID()}`,
+      management: null,
+      mechanism:
+        "No substantive evidence was retrieved for this strategy; classify as no known interaction only for calibration unless broader retrieval finds support.",
+      severity: "unknown",
+      source: "RuntimeAI",
+      sourceId: leftNode?.id ?? leftId,
+      targetId: rightNode?.id ?? rightId,
+    },
+  };
+}
+
 async function captureRuntimeEvaluation({
   adminClient,
   evaluationSetId,
@@ -1978,6 +2276,7 @@ async function captureRuntimeEvaluation({
   interactions,
   lookupDurationMs,
   nodeIds,
+  requestFingerprints,
   retrieveRuntimeEvidence,
   samplingReason,
   totalDurationMsBeforeCapture,
@@ -1989,6 +2288,7 @@ async function captureRuntimeEvaluation({
   interactions: InteractionRpcRow[];
   lookupDurationMs: number;
   nodeIds: string[];
+  requestFingerprints: Record<string, string>;
   retrieveRuntimeEvidence: boolean;
   samplingReason: string;
   totalDurationMsBeforeCapture: number;
@@ -2016,6 +2316,7 @@ async function captureRuntimeEvaluation({
       adminClient,
       nodesById,
       pairs,
+      strategy: interactionAiRetrievalStrategyVersion,
     })
     : new Map<string, RuntimeEvidenceRow[]>();
   const interactionsByPair = new Map<string, InteractionRpcRow[]>();
@@ -2035,14 +2336,16 @@ async function captureRuntimeEvaluation({
   }
 
   const captures = pairs.flatMap(([leftId, rightId]) => {
+    const fingerprint = pairFingerprint(leftId, rightId);
     const leftNode = nodesById.get(leftId);
     const rightNode = nodesById.get(rightId);
     const leftLabel = inputLabels[leftId] ?? leftNode?.canonical_name ?? leftId;
     const rightLabel = inputLabels[rightId] ?? rightNode?.canonical_name ??
       rightId;
-    const requestFingerprint = `kg-node-pair:${pairFingerprint(leftId, rightId)}`;
+    const requestFingerprint = requestFingerprints[fingerprint] ??
+      `kg-node-pair:${fingerprint}`;
     const allPairInteractions =
-      interactionsByPair.get(pairFingerprint(leftId, rightId)) ?? [];
+      interactionsByPair.get(fingerprint) ?? [];
     const interactionGroups = allPairInteractions.length
       ? allPairInteractions.map((interaction) => [interaction])
       : [[] as InteractionRpcRow[]];
@@ -2076,8 +2379,7 @@ async function captureRuntimeEvaluation({
           ? tracePromptEvidenceRows
           : [
             ...buildEvidenceRows(pairInteractions),
-            ...(retrievedEvidenceByPair.get(pairFingerprint(leftId, rightId)) ??
-              []),
+            ...(retrievedEvidenceByPair.get(fingerprint) ?? []),
           ],
       ),
       topInteraction?.interaction.aiDecisionTrace,
@@ -2118,12 +2420,11 @@ async function captureRuntimeEvaluation({
           capture_version: "check-interactions-runtime-evaluation-v2",
           ai_answer_source: isRuntimeAi ? "runtime_ai" : "deterministic_kg",
           evidence_retrieval_enabled: retrieveRuntimeEvidence,
-          evidence_retrieval_strategy: "indexed-monograph-pubmed-runtime-v1",
+          evidence_retrieval_strategy: retrievalStrategyVersion,
           interaction_count: allPairInteractions.length,
           lookup_duration_ms: lookupDurationMs,
           retrieved_evidence_count:
-            retrievedEvidenceByPair.get(pairFingerprint(leftId, rightId))
-              ?.length ?? 0,
+            retrievedEvidenceByPair.get(fingerprint)?.length ?? 0,
           total_duration_ms_before_capture: totalDurationMsBeforeCapture,
         },
         uncertainty: pairInteractions.length
@@ -2170,7 +2471,7 @@ async function captureRuntimeEvaluation({
       run_metadata: {
         capture_source: "check-interactions",
         evidence_retrieval_enabled: retrieveRuntimeEvidence,
-        evidence_retrieval_strategy: "indexed-monograph-pubmed-runtime-v1",
+        evidence_retrieval_strategy: retrievalStrategyVersion,
         model,
         prompt_version: promptVersion,
         input_pair: [leftId, rightId],
@@ -2178,8 +2479,7 @@ async function captureRuntimeEvaluation({
           row.interaction.id
         ),
         retrieved_evidence_count:
-          retrievedEvidenceByPair.get(pairFingerprint(leftId, rightId))
-            ?.length ?? 0,
+          retrievedEvidenceByPair.get(fingerprint)?.length ?? 0,
         result_count: pairInteractions.length,
       },
       sampling_reason: normalizeSamplingReason(samplingReason),
@@ -2230,16 +2530,21 @@ async function retrieveRuntimeEvidenceByPair({
   adminClient,
   nodesById,
   pairs,
+  strategy,
 }: {
   adminClient: ReturnType<typeof createClient>;
   nodesById: Map<string, KgNodeRow>;
   pairs: Array<[string, string]>;
+  strategy: RuntimeRetrievalStrategyId;
 }): Promise<Map<string, RuntimeEvidenceRow[]>> {
   const evidenceByPair = new Map<string, RuntimeEvidenceRow[]>();
+  const strategyConfig = getRuntimeRetrievalStrategyConfig(strategy);
   const uniqueNodeIds = [
     ...new Set(pairs.flatMap(([leftId, rightId]) => [leftId, rightId])),
   ];
-  const lookupScopes = await loadLookupScopes(adminClient, uniqueNodeIds);
+  const lookupScopes = strategyConfig.includePubMed
+    ? await loadLookupScopes(adminClient, uniqueNodeIds)
+    : new Map<string, string[]>();
 
   await Promise.all(
     pairs.map(async ([leftId, rightId]) => {
@@ -2259,18 +2564,24 @@ async function retrieveRuntimeEvidenceByPair({
             counterpartText: rightNode.canonical_name,
             node: leftNode,
             side: "source",
+            strategyConfig,
           }),
           loadRuntimeMonographEvidenceForSide({
             adminClient,
             counterpartText: leftNode.canonical_name,
             node: rightNode,
             side: "target",
+            strategyConfig,
           }),
-          loadRuntimePubMedEvidenceForPair({
-            adminClient,
-            leftScope: lookupScopes.get(leftId) ?? [leftId],
-            rightScope: lookupScopes.get(rightId) ?? [rightId],
-          }),
+          strategyConfig.includePubMed
+            ? loadRuntimePubMedEvidenceForPair({
+              adminClient,
+              leftScope: lookupScopes.get(leftId) ?? [leftId],
+              limit: strategyConfig.pubMedLimit,
+              rightScope: lookupScopes.get(rightId) ?? [rightId],
+              strategyConfig,
+            })
+            : Promise.resolve([]),
         ]);
 
       evidenceByPair.set(
@@ -2279,7 +2590,7 @@ async function retrieveRuntimeEvidenceByPair({
           ...leftMonographEvidence,
           ...rightMonographEvidence,
           ...pubmedEvidence,
-        ]).slice(0, 18),
+        ]).slice(0, strategyConfig.topK),
       );
     }),
   );
@@ -2337,19 +2648,27 @@ async function loadRuntimeMonographEvidenceForSide({
   counterpartText,
   node,
   side,
+  strategyConfig,
 }: {
   adminClient: ReturnType<typeof createClient>;
   counterpartText: string;
   node: KgNodeRow;
   side: "source" | "target";
+  strategyConfig: RuntimeRetrievalStrategyConfig;
 }): Promise<RuntimeEvidenceRow[]> {
   const [cpsChunks, healthCanadaChunks] = await Promise.all([
-    loadCpsInteractionChunks(adminClient, node),
-    loadHealthCanadaInteractionChunks(adminClient, node),
+    loadCpsInteractionChunks(adminClient, node, strategyConfig),
+    loadHealthCanadaInteractionChunks(adminClient, node, strategyConfig),
   ]);
   const selectedChunks = [
-    ...rankInteractionChunks(cpsChunks).slice(0, 4),
-    ...rankInteractionChunks(healthCanadaChunks).slice(0, 4),
+    ...rankInteractionChunks(cpsChunks).slice(
+      0,
+      strategyConfig.monographPerSourceLimit,
+    ),
+    ...rankInteractionChunks(healthCanadaChunks).slice(
+      0,
+      strategyConfig.monographPerSourceLimit,
+    ),
   ];
 
   return selectedChunks.map((chunk, index): RuntimeEvidenceRow => {
@@ -2364,6 +2683,7 @@ async function loadRuntimeMonographEvidenceForSide({
         extractedFacts: facts,
         kgNodeId: chunk.node_id,
         retrieval: "runtime_monograph_evidence",
+        retrievalStrategy: strategyConfig.id,
         section: chunk.section,
         side,
       },
@@ -2381,6 +2701,7 @@ async function loadRuntimeMonographEvidenceForSide({
 async function loadCpsInteractionChunks(
   adminClient: ReturnType<typeof createClient>,
   node: KgNodeRow,
+  strategyConfig: RuntimeRetrievalStrategyConfig,
 ): Promise<Array<KgChunkRow & { sourceKind: "cps_monograph" }>> {
   const candidateNodes = await loadCpsCandidateNodes(adminClient, node);
   const monographNodes = await resolveCpsMonographNodes(adminClient, [
@@ -2398,7 +2719,10 @@ async function loadCpsInteractionChunks(
     "CPS",
   );
 
-  return selectInteractionOrFallbackChunks(chunks).map((chunk) => ({
+  return selectInteractionOrFallbackChunks(
+    chunks,
+    strategyConfig.includeSafetyFallback,
+  ).map((chunk) => ({
     ...chunk,
     sourceKind: "cps_monograph",
   }));
@@ -2407,6 +2731,7 @@ async function loadCpsInteractionChunks(
 async function loadHealthCanadaInteractionChunks(
   adminClient: ReturnType<typeof createClient>,
   node: KgNodeRow,
+  strategyConfig: RuntimeRetrievalStrategyConfig,
 ): Promise<
   Array<KgChunkRow & { sourceKind: "health_canada_product_monograph" }>
 > {
@@ -2429,7 +2754,10 @@ async function loadHealthCanadaInteractionChunks(
     "HEALTH_CANADA_PRODUCT_MONOGRAPH",
   );
 
-  return selectInteractionOrFallbackChunks(chunks).map((chunk) => ({
+  return selectInteractionOrFallbackChunks(
+    chunks,
+    strategyConfig.includeSafetyFallback,
+  ).map((chunk) => ({
     ...chunk,
     sourceKind: "health_canada_product_monograph",
   }));
@@ -2664,12 +2992,20 @@ async function loadChunksForNodes(
 async function loadRuntimePubMedEvidenceForPair({
   adminClient,
   leftScope,
+  limit,
   rightScope,
+  strategyConfig,
 }: {
   adminClient: ReturnType<typeof createClient>;
   leftScope: string[];
+  limit: number;
   rightScope: string[];
+  strategyConfig: RuntimeRetrievalStrategyConfig;
 }): Promise<RuntimeEvidenceRow[]> {
+  if (limit <= 0) {
+    return [];
+  }
+
   const candidates = await loadRuntimePubMedCandidatesForPair({
     adminClient,
     leftScope,
@@ -2682,11 +3018,11 @@ async function loadRuntimePubMedEvidenceForPair({
 
   const evidenceRows = await loadRuntimePubMedEvidenceForCandidates(
     adminClient,
-    candidates.slice(0, 8),
+    candidates.slice(0, Math.max(limit, 4)),
   );
   const candidateFallbackRows = candidates
     .filter((candidate) => candidate.source_quote)
-    .slice(0, 4)
+    .slice(0, Math.max(1, Math.min(limit, 4)))
     .map((candidate, index): RuntimeEvidenceRow => ({
       chunk_id: null,
       content: [
@@ -2709,6 +3045,7 @@ async function loadRuntimePubMedEvidenceForPair({
         extractionConfidence: candidate.extraction_confidence ?? null,
         objectText: candidate.object_text,
         pmid: candidate.pmid,
+        retrievalStrategy: strategyConfig.id,
         reviewStatus: candidate.review_status,
         subjectText: candidate.subject_text,
       },
@@ -2721,10 +3058,12 @@ async function loadRuntimePubMedEvidenceForPair({
       used_in_answer: false,
     }));
 
-  return rerankEvidenceRows([...evidenceRows, ...candidateFallbackRows]).slice(
-    0,
-    8,
-  );
+  return rerankEvidenceRows(
+    appendRetrievalStrategyMetadata(
+      [...evidenceRows, ...candidateFallbackRows],
+      strategyConfig.id,
+    ),
+  ).slice(0, limit);
 }
 
 async function loadRuntimePubMedCandidatesForPair({
@@ -2877,14 +3216,39 @@ async function getKgNodesById(
   );
 }
 
-function selectInteractionOrFallbackChunks(chunks: KgChunkRow[]): KgChunkRow[] {
+function selectInteractionOrFallbackChunks(
+  chunks: KgChunkRow[],
+  includeSafetyFallback: boolean,
+): KgChunkRow[] {
   const interactionChunks = chunks.filter(isInteractionChunk);
 
-  if (interactionChunks.length) {
+  if (!includeSafetyFallback) {
     return interactionChunks;
   }
 
-  return chunks.filter(isFallbackSafetyChunk);
+  const chunksById = new Map<string, KgChunkRow>();
+
+  for (const chunk of [
+    ...interactionChunks,
+    ...chunks.filter(isFallbackSafetyChunk),
+  ]) {
+    chunksById.set(chunk.id, chunk);
+  }
+
+  return [...chunksById.values()];
+}
+
+function appendRetrievalStrategyMetadata(
+  rows: RuntimeEvidenceRow[],
+  retrievalStrategy: RuntimeRetrievalStrategyId,
+): RuntimeEvidenceRow[] {
+  return rows.map((row) => ({
+    ...row,
+    metadata: {
+      ...row.metadata,
+      retrievalStrategy,
+    },
+  }));
 }
 
 function rankInteractionChunks<
@@ -3410,10 +3774,10 @@ function groupInteractionsByPair(
   return interactionsByPair;
 }
 
-function groupRuntimeAiRowsByModelPair(
+function groupRuntimeAiRowsByModelStrategyPair(
   interactions: InteractionRpcRow[],
 ): Map<string, InteractionRpcRow[]> {
-  const rowsByModelPair = new Map<string, InteractionRpcRow[]>();
+  const rowsByModelStrategyPair = new Map<string, InteractionRpcRow[]>();
 
   for (const interaction of interactions) {
     if (interaction.interaction.source !== "RuntimeAI") {
@@ -3431,15 +3795,37 @@ function groupRuntimeAiRowsByModelPair(
       continue;
     }
 
-    const key = modelPairKey(model, pairFingerprint(leftId, rightId));
-    rowsByModelPair.set(key, [...(rowsByModelPair.get(key) ?? []), interaction]);
+    const retrievalStrategyVersion = getTraceString(
+      trace,
+      "retrievalStrategyVersion",
+    ) ?? interactionAiRetrievalStrategyVersion;
+    const key = modelStrategyPairKey(
+      model,
+      normalizeRuntimeRetrievalStrategyId(retrievalStrategyVersion),
+      pairFingerprint(leftId, rightId),
+    );
+    rowsByModelStrategyPair.set(key, [
+      ...(rowsByModelStrategyPair.get(key) ?? []),
+      interaction,
+    ]);
   }
 
-  return rowsByModelPair;
+  return rowsByModelStrategyPair;
 }
 
-function modelPairKey(model: string, fingerprint: string): string {
-  return `${model}:${fingerprint}`;
+function modelStrategyPairKey(
+  model: string,
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId,
+  fingerprint: string,
+): string {
+  return `${model}:${retrievalStrategyVersion}:${fingerprint}`;
+}
+
+function strategyPairKey(
+  retrievalStrategyVersion: RuntimeRetrievalStrategyId,
+  fingerprint: string,
+): string {
+  return `${retrievalStrategyVersion}:${fingerprint}`;
 }
 
 function getCalibrationModels(
@@ -3459,7 +3845,43 @@ function getCalibrationModels(
     model === "claude-haiku-4-5" ? "claude-haiku-4-5-20251001" : model
   );
 
-  return [...new Set(normalized)].slice(0, 3);
+  return [...new Set(normalized)].slice(0, 5);
+}
+
+function getCalibrationRetrievalStrategies(
+  value: unknown,
+): RuntimeRetrievalStrategyId[] {
+  const requestedStrategies = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : defaultCalibrationRetrievalStrategyPanel;
+  const strategies = requestedStrategies
+    .map(normalizeRuntimeRetrievalStrategyId)
+    .filter((strategy): strategy is RuntimeRetrievalStrategyId =>
+      Boolean(strategy)
+    );
+
+  return [...new Set(strategies)].slice(0, 4);
+}
+
+function normalizeRuntimeRetrievalStrategyId(
+  value: string,
+): RuntimeRetrievalStrategyId {
+  return isRuntimeRetrievalStrategyId(value)
+    ? value
+    : interactionAiRetrievalStrategyVersion;
+}
+
+function isRuntimeRetrievalStrategyId(
+  value: string,
+): value is RuntimeRetrievalStrategyId {
+  return value in runtimeRetrievalStrategyConfigs;
+}
+
+function getRuntimeRetrievalStrategyConfig(
+  strategy: RuntimeRetrievalStrategyId,
+): RuntimeRetrievalStrategyConfig {
+  return runtimeRetrievalStrategyConfigs[strategy] ??
+    runtimeRetrievalStrategyConfigs[interactionAiRetrievalStrategyVersion];
 }
 
 function isInteractionActionCategory(
@@ -3694,6 +4116,31 @@ function parseInputLabels(value: unknown): Record<string, string> {
       typeof label === "string" && label.trim()
         ? [[key, label.trim()]]
         : []
+    ),
+  );
+}
+
+function parseEvaluationRequestFingerprints(
+  value: unknown,
+): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).flatMap(
+      ([pairKey, requestFingerprint]) => {
+        if (
+          typeof pairKey !== "string" ||
+          !pairKey.trim() ||
+          typeof requestFingerprint !== "string" ||
+          !requestFingerprint.trim()
+        ) {
+          return [];
+        }
+
+        return [[pairKey.trim(), requestFingerprint.trim()]];
+      },
     ),
   );
 }
