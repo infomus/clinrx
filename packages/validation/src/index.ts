@@ -18,6 +18,14 @@ export const interactionSeveritySchema = z.enum([
   "unknown",
 ]);
 
+export const interactionActionCategorySchema = z.enum([
+  "no_known_interaction",
+  "no_action_needed",
+  "monitor_therapy",
+  "consider_therapy_modification",
+  "avoid_combination",
+]);
+
 export const edgeReviewStatusSchema = z.enum([
   "candidate",
   "under_review",
@@ -42,8 +50,101 @@ export const pubMedAiReviewVerdictSchema = z.enum([
   "likely_reject",
 ]);
 
+export const pubMedAiDecisionSchema = z.enum([
+  "publishable",
+  "reject",
+  "needs_context",
+  "insufficient_evidence",
+]);
+
+export const pubMedAutomationTierSchema = z.enum([
+  "auto_publish_ready",
+  "sample_for_audit",
+  "needs_context",
+  "auto_reject",
+  "quarantine",
+  "benchmark",
+]);
+
+export const pubMedEvaluationSetPurposeSchema = z.enum([
+  "calibration",
+  "gold_set",
+  "hard_negative",
+  "regression_test",
+  "benchmark",
+  "random_sample",
+  "active_learning",
+  "disagreement_review",
+]);
+
+export const pubMedEvaluationSamplingReasonSchema = z.enum([
+  "high_confidence_publishable",
+  "high_confidence_reject",
+  "model_disagreement",
+  "low_confidence",
+  "unresolved_entity",
+  "new_source_type",
+  "new_drug_class",
+  "table_or_figure_evidence",
+  "cross_source_conflict",
+  "random_drift_sample",
+  "full_text_candidate",
+  "monograph_conflict",
+  "regression_failure",
+  "manual",
+]);
+
+export const pubMedHumanLabelSchema = z.union([
+  pubMedAiDecisionSchema,
+  z.literal("unclear"),
+]);
+
+export const pubMedCalibrationFailureModeSchema = z.enum([
+  "wrong_entity_resolution",
+  "wrong_ingredient_product_class_level",
+  "evidence_does_not_support_interaction",
+  "mechanism_only_inference",
+  "table_or_figure_misread",
+  "severity_unsupported",
+  "management_unsupported",
+  "narrow_applicability_overgeneralized",
+  "duplicate_or_stale_evidence",
+  "contradicted_evidence",
+  "missing_source_coverage",
+  "none",
+]);
+
 export const pubMedAiReviewSchema = z.object({
+  actionCategory: interactionActionCategorySchema,
   concerns: z.array(z.string().min(1)),
+  decisionTrace: z
+    .object({
+      chunkAssessments: z
+        .array(
+          z.object({
+            chunkId: z.string().min(1).optional(),
+            conclusion: z.string().min(1),
+            limitation: z.string().min(1).nullable().optional(),
+            quote: z.string().min(1).nullable().optional(),
+            supportType: z
+              .enum([
+                "supports_interaction",
+                "supports_mechanism",
+                "supports_severity",
+                "supports_management",
+                "contradicts_or_limits",
+                "source_silent",
+              ])
+              .optional(),
+          }),
+        )
+        .optional(),
+      finalRationale: z.string().min(1).optional(),
+      retrievalNotes: z.string().min(1).optional(),
+      uncertainty: z.array(z.string().min(1)).optional(),
+    })
+    .nullable()
+    .optional(),
   entityResolutionNotes: z.string().min(1).nullable().optional(),
   evidenceAssessment: z.string().min(1),
   recommendedRejectionReason: pubMedRejectionReasonSchema.nullable().optional(),
@@ -73,6 +174,7 @@ export const interactionCandidateSchema = z.object({
   sourceNodeId: z.uuid(),
   targetNodeId: z.uuid(),
   severity: interactionSeveritySchema,
+  actionCategory: interactionActionCategorySchema.optional(),
   mechanism: z.string().min(1).optional(),
   management: z.string().min(1).optional(),
   evidenceLevel: z.string().min(1).optional(),
@@ -103,12 +205,53 @@ export const extractedPubMedInteractionSchema = z.object({
   subjectText: z.string().min(1),
   objectText: z.string().min(1),
   severity: interactionSeveritySchema,
+  actionCategory: interactionActionCategorySchema.optional(),
   mechanism: z.string().min(1).optional(),
   management: z.string().min(1).optional(),
   evidenceLevel: z.string().min(1).optional(),
   extractionConfidence: z.number().min(0).max(1),
   sourceQuote: z.string().min(1).optional(),
   citations: z.array(interactionCitationSchema).min(1),
+  evidenceChunkRefs: z
+    .array(
+      z.object({
+        chunkId: z.uuid(),
+        confidence: z.number().min(0).max(1),
+        quote: z.string().min(1).optional(),
+        supportType: z.enum([
+          "supports_interaction",
+          "supports_mechanism",
+          "supports_severity",
+          "supports_management",
+          "contradicts_or_limits",
+        ]),
+      }),
+    )
+    .optional(),
+  quantitativeEffects: z
+    .array(
+      z.object({
+        comparator: z.string().min(1).optional(),
+        metric: z.string().min(1),
+        sourceChunkId: z.uuid(),
+        value: z.string().min(1),
+      }),
+    )
+    .optional(),
+  applicability: z
+    .object({
+      dose: z.string().min(1).optional(),
+      evidenceContext: z
+        .enum(["human", "animal", "in_vitro", "unknown"])
+        .optional(),
+      population: z.string().min(1).optional(),
+      route: z.string().min(1).optional(),
+      timing: z.string().min(1).optional(),
+    })
+    .optional(),
+  evidenceSummary: z.record(z.string(), z.unknown()).optional(),
+  aiDecisionTrace: z.record(z.string(), z.unknown()).optional(),
+  fullTextProcessed: z.boolean().optional(),
 });
 
 export const extractedPubMedInteractionsSchema = z.object({

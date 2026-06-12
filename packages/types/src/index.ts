@@ -23,6 +23,13 @@ export type InteractionSeverity =
   | "minor"
   | "unknown";
 
+export type InteractionActionCategory =
+  | "no_known_interaction"
+  | "no_action_needed"
+  | "monitor_therapy"
+  | "consider_therapy_modification"
+  | "avoid_combination";
+
 export type EdgeReviewStatus =
   | "candidate"
   | "under_review"
@@ -43,6 +50,87 @@ export type PubMedAiReviewVerdict =
   | "likely_publishable"
   | "needs_human_review"
   | "likely_reject";
+
+export type PubMedAiDecision =
+  | "publishable"
+  | "reject"
+  | "needs_context"
+  | "insufficient_evidence";
+
+export type PubMedAutomationTier =
+  | "auto_publish_ready"
+  | "sample_for_audit"
+  | "needs_context"
+  | "auto_reject"
+  | "quarantine"
+  | "benchmark";
+
+export type PubMedEvaluationSetPurpose =
+  | "calibration"
+  | "gold_set"
+  | "hard_negative"
+  | "regression_test"
+  | "benchmark"
+  | "random_sample"
+  | "active_learning"
+  | "disagreement_review";
+
+export type PubMedEvaluationSamplingReason =
+  | "high_confidence_publishable"
+  | "high_confidence_reject"
+  | "model_disagreement"
+  | "low_confidence"
+  | "unresolved_entity"
+  | "new_source_type"
+  | "new_drug_class"
+  | "table_or_figure_evidence"
+  | "cross_source_conflict"
+  | "random_drift_sample"
+  | "full_text_candidate"
+  | "monograph_conflict"
+  | "regression_failure"
+  | "manual";
+
+export type PubMedHumanLabel = PubMedAiDecision | "unclear";
+
+export type PubMedCalibrationFailureMode =
+  | "wrong_entity_resolution"
+  | "wrong_ingredient_product_class_level"
+  | "evidence_does_not_support_interaction"
+  | "mechanism_only_inference"
+  | "table_or_figure_misread"
+  | "severity_unsupported"
+  | "management_unsupported"
+  | "narrow_applicability_overgeneralized"
+  | "duplicate_or_stale_evidence"
+  | "contradicted_evidence"
+  | "missing_source_coverage"
+  | "none";
+
+export type PubMedEvidenceRetrievalAssessment =
+  | "correct"
+  | "incomplete"
+  | "wrong"
+  | "not_assessed";
+
+export type PubMedAiInterpretationAssessment =
+  | "correct"
+  | "partially_correct"
+  | "wrong"
+  | "not_assessed";
+
+export type PubMedGeneralizationAssessment =
+  | "appropriate"
+  | "too_broad"
+  | "too_narrow"
+  | "unclear"
+  | "not_assessed";
+
+export type PubMedAutomationSafetyAssessment =
+  | "safe_to_automate"
+  | "sample_only"
+  | "quarantine"
+  | "not_assessed";
 
 export type PubMedCalibrationInteractionAssessment =
   | "real"
@@ -94,6 +182,14 @@ export interface PubMedCalibrationReview {
   resolutionAssessment?: PubMedCalibrationResolutionAssessment | null;
   severityManagementAssessment?: PubMedCalibrationSeverityManagementAssessment | null;
   decision?: PubMedCalibrationDecision | null;
+  humanLabel?: PubMedHumanLabel | null;
+  labelPurpose?: PubMedEvaluationSetPurpose | null;
+  failureModes: PubMedCalibrationFailureMode[];
+  evidenceRetrievalAssessment?: PubMedEvidenceRetrievalAssessment | null;
+  aiInterpretationAssessment?: PubMedAiInterpretationAssessment | null;
+  generalizationAssessment?: PubMedGeneralizationAssessment | null;
+  automationSafetyAssessment?: PubMedAutomationSafetyAssessment | null;
+  suggestedPrevention?: string | null;
   missingContext: PubMedCalibrationMissingContext[];
   timeBucket?: PubMedCalibrationTimeBucket | null;
   notes: string;
@@ -103,11 +199,235 @@ export interface PubMedCalibrationReview {
 
 export type PubMedCalibrationReviewInput = Omit<
   PubMedCalibrationReview,
-  "createdAt" | "id" | "updatedAt"
->;
+  "createdAt" | "failureModes" | "id" | "updatedAt"
+> & {
+  failureModes?: PubMedCalibrationFailureMode[];
+};
+
+export interface PubMedEvaluationSet {
+  id: string;
+  name: string;
+  purpose: PubMedEvaluationSetPurpose;
+  description: string;
+  criteria: Record<string, unknown>;
+  version: number;
+  isLocked: boolean;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PubMedEvaluationSetCandidate {
+  setId: string;
+  candidateId: string;
+  samplingReason: PubMedEvaluationSamplingReason;
+  labelPurpose: PubMedEvaluationSetPurpose;
+  expectedLabel: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  addedBy?: string | null;
+  createdAt: string;
+}
+
+export interface PubMedEvaluationSetCandidateWithCandidate {
+  evaluationSetCandidate: PubMedEvaluationSetCandidate;
+  candidate: PubMedInteractionCandidate;
+}
+
+export interface PubMedEvaluationSetBundle {
+  set: PubMedEvaluationSet;
+  candidates: PubMedEvaluationSetCandidateWithCandidate[];
+}
+
+export interface PubMedCandidateAutomationMetric {
+  aiDecision: PubMedAiDecision | "unassigned";
+  aiReviewVerdict: PubMedAiReviewVerdict | "unreviewed";
+  automationTier: PubMedAutomationTier | "unassigned";
+  averageAiReviewScore?: number | null;
+  candidateCount: number;
+  fullTextEvidenceCount: number;
+  fullyResolvedCount: number;
+  monographEvidenceCount: number;
+  unresolvedCount: number;
+}
+
+export interface PubMedCalibrationLabelMetric {
+  aiDecision: PubMedAiDecision | "unassigned";
+  automationTier: PubMedAutomationTier | "unassigned";
+  averageAiReviewScore?: number | null;
+  exactLabelMatchCount: number;
+  humanLabel: PubMedHumanLabel | "unlabeled";
+  labelDisagreementCount: number;
+  labelPurpose: PubMedEvaluationSetPurpose;
+  reviewCount: number;
+}
+
+export interface PubMedCalibrationFailureModeMetric {
+  failureMode: PubMedCalibrationFailureMode;
+  labelPurpose: PubMedEvaluationSetPurpose;
+  reviewCount: number;
+}
+
+export interface PubMedEvaluationMetricsReport {
+  automationMetrics: PubMedCandidateAutomationMetric[];
+  calibrationLabelMetrics: PubMedCalibrationLabelMetric[];
+  failureModeMetrics: PubMedCalibrationFailureModeMetric[];
+}
+
+export type InteractionEvaluationPurpose = PubMedEvaluationSetPurpose;
+
+export type InteractionEvaluationSamplingReason =
+  | "known_interaction"
+  | "known_no_interaction"
+  | "high_risk_pair"
+  | "common_pair"
+  | "class_interaction"
+  | "product_specific"
+  | "cps_supported"
+  | "health_canada_only"
+  | "pubmed_emerging"
+  | "nhp_or_supplement"
+  | "negative_control"
+  | "prior_failure"
+  | "random_drift_sample"
+  | "manual";
+
+export type InteractionEvaluationCategory =
+  | InteractionActionCategory
+  | "unclear";
+
+export type InteractionEvaluationEvidenceSourceKind =
+  | "cps_monograph"
+  | "health_canada_product_monograph"
+  | "pubmed"
+  | "kg_edge"
+  | "safety"
+  | "nhp"
+  | "other";
+
+export type InteractionEvaluationEvidenceSupportType =
+  | PubMedEvidenceSupportType
+  | "source_silent"
+  | "retrieved";
+
+export interface InteractionEvaluationSet {
+  id: string;
+  name: string;
+  purpose: InteractionEvaluationPurpose;
+  description: string;
+  criteria: Record<string, unknown>;
+  version: number;
+  isLocked: boolean;
+  createdBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InteractionEvaluationRequest {
+  id: string;
+  setId: string;
+  inputSourceText: string;
+  inputTargetText: string;
+  requestFingerprint?: string | null;
+  sourceCandidateId?: string | null;
+  samplingReason: InteractionEvaluationSamplingReason;
+  expectedCategory?: InteractionEvaluationCategory | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InteractionEvaluationRun {
+  id: string;
+  requestId: string;
+  runVersion: number;
+  status: "completed" | "failed" | "not_run";
+  resolvedSourceId?: string | null;
+  resolvedTargetId?: string | null;
+  resolvedSourceNode?: KgNode | null;
+  resolvedTargetNode?: KgNode | null;
+  resolvedEntities: Record<string, unknown>;
+  answerCategory?: InteractionActionCategory | null;
+  answerSummary?: string | null;
+  severity?: InteractionSeverity | null;
+  management?: string | null;
+  confidence?: number | null;
+  retrievalStrategyVersion: string;
+  promptVersion?: string | null;
+  model?: string | null;
+  decisionTrace: PubMedAiDecisionTrace | Record<string, unknown>;
+  automationTier?: PubMedAutomationTier | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface InteractionEvaluationEvidence {
+  id: string;
+  runId: string;
+  sourceKind: InteractionEvaluationEvidenceSourceKind;
+  sourceTable?: string | null;
+  sourceId?: string | null;
+  chunkId?: string | null;
+  rank: number;
+  supportType: InteractionEvaluationEvidenceSupportType;
+  usedInAnswer: boolean;
+  quote?: string | null;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface InteractionEvaluationLabel {
+  id: string;
+  setId: string;
+  requestId: string;
+  runId?: string | null;
+  reviewerId?: string | null;
+  reviewerKey: string;
+  finalCategory?: InteractionEvaluationCategory | null;
+  entityResolutionAssessment?: PubMedCalibrationResolutionAssessment | null;
+  evidenceRetrievalAssessment?: PubMedEvidenceRetrievalAssessment | null;
+  aiInterpretationAssessment?: PubMedAiInterpretationAssessment | null;
+  managementAssessment?: PubMedCalibrationSeverityManagementAssessment | null;
+  generalizationAssessment?: PubMedGeneralizationAssessment | null;
+  automationSafetyAssessment?: PubMedAutomationSafetyAssessment | null;
+  failureModes: PubMedCalibrationFailureMode[];
+  missingContext: PubMedCalibrationMissingContext[];
+  suggestedPrevention?: string | null;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type InteractionEvaluationLabelInput = Omit<
+  InteractionEvaluationLabel,
+  "createdAt" | "failureModes" | "id" | "updatedAt"
+> & {
+  failureModes?: PubMedCalibrationFailureMode[];
+};
+
+export interface InteractionEvaluationRunWithEvidence {
+  evidence: InteractionEvaluationEvidence[];
+  labels: InteractionEvaluationLabel[];
+  run: InteractionEvaluationRun;
+}
+
+export interface InteractionEvaluationRequestWithRun {
+  evidence: InteractionEvaluationEvidence[];
+  labels: InteractionEvaluationLabel[];
+  request: InteractionEvaluationRequest;
+  run: InteractionEvaluationRun | null;
+  runs: InteractionEvaluationRunWithEvidence[];
+}
+
+export interface InteractionEvaluationSetBundle {
+  requests: InteractionEvaluationRequestWithRun[];
+  set: InteractionEvaluationSet;
+}
 
 export interface PubMedAiReview {
+  actionCategory: InteractionActionCategory;
   concerns: string[];
+  decisionTrace?: PubMedAiDecisionTrace | null;
   entityResolutionNotes?: string | null;
   evidenceAssessment: string;
   recommendedRejectionReason?: PubMedRejectionReason | null;
@@ -117,11 +437,108 @@ export interface PubMedAiReview {
   verdict: PubMedAiReviewVerdict;
 }
 
+export interface PubMedAiDecisionTrace {
+  chunkAssessments?: Array<{
+    chunkId?: string;
+    conclusion: string;
+    limitation?: string | null;
+    quote?: string | null;
+    supportType?: PubMedEvidenceSupportType | MonographEvidenceSupportType;
+  }>;
+  finalRationale?: string;
+  retrievalNotes?: string;
+  uncertainty?: string[];
+}
+
+export type PubMedEvidenceSourceType =
+  | "abstract"
+  | "paragraph"
+  | "table"
+  | "figure_caption"
+  | "figure_interpretation"
+  | "supplement";
+
+export type PubMedEvidenceSupportType =
+  | "supports_interaction"
+  | "supports_mechanism"
+  | "supports_severity"
+  | "supports_management"
+  | "contradicts_or_limits";
+
+export type MonographEvidenceSupportType =
+  | PubMedEvidenceSupportType
+  | "source_silent";
+
+export type MonographEvidenceSourceKind =
+  | "cps_monograph"
+  | "health_canada_product_monograph";
+
+export type MonographEvidenceSide = "source" | "target" | "shared";
+
+export interface PubMedEvidenceChunk {
+  id: string;
+  pmid: string;
+  pmcid?: string | null;
+  sourceType: PubMedEvidenceSourceType;
+  sectionTitle?: string | null;
+  sectionPath: string[];
+  label?: string | null;
+  content: string;
+  structuredContent: Record<string, unknown>;
+  relevanceScore?: number | null;
+  extractionConfidence?: number | null;
+  license?: string | null;
+  sourceUrl?: string | null;
+  createdAt: string;
+}
+
+export interface PubMedCandidateEvidence {
+  chunk: PubMedEvidenceChunk;
+  confidence?: number | null;
+  quote?: string | null;
+  supportType: PubMedEvidenceSupportType;
+}
+
+export interface MonographEvidenceFacts {
+  counterpartMentioned?: boolean;
+  enzymes?: string[];
+  management?: string[];
+  receptors?: string[];
+  roles?: string[];
+  transporters?: string[];
+  [key: string]: unknown;
+}
+
+export interface PubMedCandidateMonographEvidence {
+  chunkId: string;
+  confidence?: number | null;
+  content: string;
+  extractedFacts: MonographEvidenceFacts;
+  nodeId: string;
+  nodeIdentifiers: Record<string, unknown>;
+  nodeName?: string | null;
+  nodeSource?: string | null;
+  quote?: string | null;
+  section?: string | null;
+  side: MonographEvidenceSide;
+  sourceKind: MonographEvidenceSourceKind;
+  supportType: MonographEvidenceSupportType;
+}
+
+export interface PubMedApplicability {
+  dose?: string;
+  evidenceContext?: "human" | "animal" | "in_vitro" | "unknown";
+  population?: string;
+  route?: string;
+  timing?: string;
+}
+
 export interface KgNode {
   id: string;
   type: KgNodeType;
   canonicalName: string;
   identifiers: Record<string, unknown>;
+  uncertainty?: Record<string, unknown>;
   summary?: string | null;
   source: string;
   sourceConflicts?: string[];
@@ -178,6 +595,8 @@ export interface InteractionCitation {
 }
 
 export interface InteractionEdgeProperties {
+  actionCategory?: InteractionActionCategory;
+  aiDecisionTrace?: PubMedAiDecisionTrace | Record<string, unknown>;
   severity?: InteractionSeverity;
   mechanism?: string;
   management?: string;
@@ -189,6 +608,8 @@ export interface InteractionRecord {
   id: string;
   sourceId: string;
   targetId: string;
+  actionCategory?: InteractionActionCategory | null;
+  aiDecisionTrace?: PubMedAiDecisionTrace | Record<string, unknown> | null;
   severity: InteractionSeverity;
   mechanism?: string | null;
   management?: string | null;
@@ -241,6 +662,20 @@ export interface PubMedInteractionCandidate {
   aiReviewScore?: number | null;
   aiReviewVerdict?: PubMedAiReviewVerdict | null;
   aiReviewedAt?: string | null;
+  aiDecision?: PubMedAiDecision | null;
+  aiDecisionTrace?: PubMedAiDecisionTrace | Record<string, unknown> | null;
+  automationTier?: PubMedAutomationTier | null;
+  automationReason?: string | null;
+  automationMetadata?: Record<string, unknown>;
+  pipelineVersions?: Record<string, unknown>;
+  kgUncertainty?: Record<string, unknown>;
+  applicability?: PubMedApplicability | Record<string, unknown>;
+  candidateEvidence?: PubMedCandidateEvidence[];
+  evidenceSummary?: Record<string, unknown>;
+  fullTextEvidenceCount: number;
+  fullTextProcessed: boolean;
+  interactionActionCategory?: InteractionActionCategory | null;
+  monographEvidence?: PubMedCandidateMonographEvidence[];
   sourceCpsMonographCoverage?: CpsMonographCoverage | null;
   targetCpsMonographCoverage?: CpsMonographCoverage | null;
   sourceMonographCoverage?: HealthCanadaMonographCoverage | null;

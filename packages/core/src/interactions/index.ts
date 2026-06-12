@@ -85,10 +85,26 @@ const severityRank = {
   unknown: 4,
 } as const;
 
+const actionCategoryRank = {
+  avoid_combination: 0,
+  consider_therapy_modification: 1,
+  monitor_therapy: 2,
+  no_action_needed: 3,
+  no_known_interaction: 4,
+} as const;
+
 function sortBySeverity(results: InteractionResult[]): InteractionResult[] {
   return [...results].sort(
-    (left, right) =>
-      severityRank[left.interaction.severity] -
-      severityRank[right.interaction.severity],
+    (left, right) => getInteractionRank(left) - getInteractionRank(right),
   );
+}
+
+function getInteractionRank(result: InteractionResult): number {
+  const actionCategory = result.interaction.actionCategory;
+
+  if (actionCategory) {
+    return actionCategoryRank[actionCategory];
+  }
+
+  return severityRank[result.interaction.severity];
 }

@@ -22,8 +22,11 @@ import {
 import type {
   EdgeReviewStatus,
   HealthCanadaMonographCoverage,
+  InteractionActionCategory,
   KgNode,
+  PubMedAiDecision,
   PubMedAiReviewVerdict,
+  PubMedAutomationTier,
   PubMedInteractionCandidate,
   PubMedRejectionReason,
 } from "@clinrx/types";
@@ -47,6 +50,12 @@ function InteractionReviewContent() {
   const [aiReviewVerdict, setAiReviewVerdict] = useState<
     PubMedAiReviewVerdict | "all"
   >("all");
+  const [aiDecision, setAiDecision] = useState<PubMedAiDecision | "all">(
+    "all",
+  );
+  const [automationTier, setAutomationTier] = useState<
+    PubMedAutomationTier | "all"
+  >("all");
   const [resolutionFilter, setResolutionFilter] = useState<
     "all" | "resolved" | "unresolved"
   >("all");
@@ -58,13 +67,17 @@ function InteractionReviewContent() {
       "pubmed-interaction-candidates",
       reviewStatus,
       aiReviewVerdict,
+      aiDecision,
+      automationTier,
       resolutionFilter,
       resolutionFlagFilter,
       page,
     ],
     queryFn: () =>
       listPubMedInteractionCandidates(supabase, {
+        aiDecision,
         aiReviewVerdict,
+        automationTier,
         limit:
           resolutionFlagFilter === "all"
             ? reviewPageSize
@@ -83,11 +96,15 @@ function InteractionReviewContent() {
       "pubmed-interaction-candidate-count",
       reviewStatus,
       aiReviewVerdict,
+      aiDecision,
+      automationTier,
       resolutionFilter,
     ],
     queryFn: () =>
       getPubMedCandidateCount(supabase, {
+        aiDecision,
         aiReviewVerdict,
+        automationTier,
         resolution: resolutionFilter,
         reviewStatus,
       }),
@@ -184,7 +201,14 @@ function InteractionReviewContent() {
 
   useEffect(() => {
     setPage(0);
-  }, [aiReviewVerdict, resolutionFilter, resolutionFlagFilter, reviewStatus]);
+  }, [
+    aiDecision,
+    aiReviewVerdict,
+    automationTier,
+    resolutionFilter,
+    resolutionFlagFilter,
+    reviewStatus,
+  ]);
 
   const activeResultCount =
     resolutionFlagFilter === "all"
@@ -205,8 +229,9 @@ function InteractionReviewContent() {
             PubMed Candidates
           </Text>
           <Text className="mt-3 text-base leading-6 text-ink/70">
-            Extracted interaction candidates stay out of the checker until a
-            reviewer resolves both graph nodes and publishes them.
+            Extracted interaction candidates are staged for diagnostics,
+            calibration, and graph resolution. Automation tiers decide what can
+            be sampled, quarantined, or considered publish-ready.
           </Text>
         </View>
 
@@ -248,6 +273,18 @@ function InteractionReviewContent() {
             options={aiVerdictFilterOptions}
             selected={aiReviewVerdict}
             onSelect={setAiReviewVerdict}
+          />
+          <FilterGroup
+            label="AI decision"
+            options={aiDecisionFilterOptions}
+            selected={aiDecision}
+            onSelect={setAiDecision}
+          />
+          <FilterGroup
+            label="Automation tier"
+            options={automationTierFilterOptions}
+            selected={automationTier}
+            onSelect={setAutomationTier}
           />
           <FilterGroup
             label="Resolution"
@@ -351,6 +388,8 @@ function CandidateCard({
   const canPublish = Boolean(
     candidate.resolvedSourceId && candidate.resolvedTargetId,
   );
+  const actionCategory = getCandidateActionCategory(candidate);
+  const actionCategoryStyle = actionCategoryStyles[actionCategory];
   const trimmedReviewerNote = reviewerNote.trim();
   const aiReviewParseFailed =
     candidate.aiReview?.summary
@@ -366,9 +405,16 @@ function CandidateCard({
 
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
-      <Text className="text-sm font-semibold uppercase text-coral">
-        Severity: {severityLabels[candidate.severity]}
-      </Text>
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text
+          className={`rounded-md border px-2 py-1 text-xs font-semibold uppercase ${actionCategoryStyle.badge}`}
+        >
+          {actionCategoryLabels[actionCategory]}
+        </Text>
+        <Text className="text-xs font-semibold uppercase text-ink/50">
+          Severity: {severityLabels[candidate.severity]}
+        </Text>
+      </View>
       <Text className="mt-2 text-lg font-semibold text-ink">
         {candidate.subjectText} + {candidate.objectText}
       </Text>
@@ -408,6 +454,9 @@ function CandidateCard({
       <Text className="mt-1 text-sm text-ink/60">
         Resolution: {canPublish ? "ready" : "waiting for graph node matches"}
       </Text>
+      <AutomationDiagnosticsPanel candidate={candidate} />
+      <MonographEvidencePanel candidate={candidate} />
+      <FullTextEvidencePanel candidate={candidate} />
       {resolutionFlags.length ? (
         <ResolutionFlagPanel flags={resolutionFlags} />
       ) : null}
@@ -425,6 +474,11 @@ function CandidateCard({
         <View className="mt-4 rounded-lg border border-ink/10 bg-white p-3">
           <View className="flex-row flex-wrap items-center gap-2">
             <Text className="text-sm font-semibold text-ink">AI review</Text>
+            <Text
+              className={`rounded-md border px-2 py-1 text-xs font-semibold uppercase ${actionCategoryStyle.badge}`}
+            >
+              {actionCategoryLabels[actionCategory]}
+            </Text>
             <Text
               className={`rounded-md px-2 py-1 text-xs font-semibold ${
                 candidate.aiReview.verdict === "likely_publishable"
@@ -476,6 +530,7 @@ function CandidateCard({
               ))}
             </View>
           ) : null}
+          <DecisionTracePanel candidate={candidate} />
         </View>
       ) : (
         <View className="mt-4 rounded-lg border border-ink/10 bg-white p-3">
@@ -580,6 +635,446 @@ function CandidateCard({
   );
 }
 
+function AutomationDiagnosticsPanel({
+  candidate,
+}: {
+  candidate: PubMedInteractionCandidate;
+}) {
+  const tier = candidate.automationTier ?? null;
+  const decision = candidate.aiDecision ?? null;
+  const versionRows = getDiagnosticRows(candidate.pipelineVersions, 8);
+  const uncertaintyRows = getDiagnosticRows(candidate.kgUncertainty, 10);
+  const metadataRows = getDiagnosticRows(candidate.automationMetadata, 6);
+
+  return (
+    <View className="mt-3 rounded-lg border border-ink/10 bg-mist p-3">
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm font-semibold text-ink">
+          Automation diagnostics
+        </Text>
+        <Text
+          className={`rounded-md border px-2 py-1 text-xs font-semibold uppercase ${
+            tier ? automationTierStyles[tier] : "border-ink/10 bg-white text-ink/60"
+          }`}
+        >
+          {tier ? automationTierLabels[tier] : "No tier"}
+        </Text>
+        <Text className="rounded-md bg-white px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+          {decision ? aiDecisionLabels[decision] : "No AI decision"}
+        </Text>
+      </View>
+      {candidate.automationReason ? (
+        <Text className="mt-2 text-sm leading-5 text-ink/70">
+          {candidate.automationReason}
+        </Text>
+      ) : null}
+      {metadataRows.length ? (
+        <DiagnosticRows title="Automation metadata" rows={metadataRows} />
+      ) : null}
+      {uncertaintyRows.length ? (
+        <DiagnosticRows title="KG uncertainty" rows={uncertaintyRows} />
+      ) : null}
+      {versionRows.length ? (
+        <DiagnosticRows title="Pipeline versions" rows={versionRows} />
+      ) : null}
+    </View>
+  );
+}
+
+function DiagnosticRows({
+  rows,
+  title,
+}: {
+  rows: Array<{ label: string; value: string }>;
+  title: string;
+}) {
+  return (
+    <View className="mt-3 border-t border-ink/10 pt-3">
+      <Text className="text-xs font-semibold uppercase text-ink/50">
+        {title}
+      </Text>
+      <View className="mt-2 flex-row flex-wrap gap-2">
+        {rows.map((row) => (
+          <Text
+            className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-ink/70"
+            key={`${title}:${row.label}:${row.value}`}
+          >
+            {row.label}: {row.value}
+          </Text>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function MonographEvidencePanel({
+  candidate,
+}: {
+  candidate: PubMedInteractionCandidate;
+}) {
+  const evidence = candidate.monographEvidence ?? [];
+  const hasResolvedNode = Boolean(
+    candidate.resolvedSourceId || candidate.resolvedTargetId,
+  );
+
+  if (!hasResolvedNode && !evidence.length) {
+    return null;
+  }
+
+  return (
+    <View className="mt-3 rounded-lg border border-ink/10 bg-mist p-3">
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm font-semibold text-ink">
+          Monograph interaction evidence
+        </Text>
+        <Text className="rounded-md bg-white px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+          {evidence.length} chunks
+        </Text>
+      </View>
+      {evidence.length ? (
+        <View className="mt-3 gap-3">
+          {evidence.map((item) => {
+            const factRows = getMonographFactRows(item.extractedFacts);
+            const sourceUrl = getMonographEvidenceUrl(item);
+
+            return (
+              <View
+                className="rounded-lg border border-ink/10 bg-white p-3"
+                key={`${item.chunkId}:${item.supportType}:${item.side}`}
+              >
+                <View className="flex-row flex-wrap items-center gap-2">
+                  <Text className="rounded-md bg-leaf/10 px-2 py-1 text-xs font-semibold uppercase text-leaf">
+                    {monographSourceKindLabels[item.sourceKind] ??
+                      item.sourceKind}
+                  </Text>
+                  <Text className="rounded-md bg-ink/10 px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+                    {sideLabels[item.side] ?? item.side}
+                  </Text>
+                  <Text className="rounded-md bg-ink/10 px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+                    {supportTypeLabels[item.supportType] ?? item.supportType}
+                  </Text>
+                </View>
+                <Text className="mt-2 text-sm font-semibold text-ink/70">
+                  {item.nodeName ?? "Unknown monograph"}
+                </Text>
+                {item.section ? (
+                  <Text className="mt-1 text-xs font-semibold uppercase text-ink/50">
+                    {monographSectionLabels[item.section] ?? item.section}
+                  </Text>
+                ) : null}
+                {item.quote ? (
+                  <Text className="mt-2 text-sm leading-5 text-ink/70">
+                    "{item.quote}"
+                  </Text>
+                ) : (
+                  <Text className="mt-2 text-sm leading-5 text-ink/70">
+                    {truncateEvidenceText(item.content)}
+                  </Text>
+                )}
+                {factRows.length ? (
+                  <View className="mt-2 flex-row flex-wrap gap-2">
+                    {factRows.map((row) => (
+                      <Text
+                        className="rounded-md bg-mist px-2 py-1 text-xs font-semibold text-ink/70"
+                        key={`${item.chunkId}:${row.label}`}
+                      >
+                        {row.label}: {row.value}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+                <View className="mt-2 flex-row flex-wrap gap-3">
+                  <Text className="text-xs text-ink/50">
+                    Chunk {formatChunkId(item.chunkId)}
+                  </Text>
+                  {item.confidence !== null && item.confidence !== undefined ? (
+                    <Text className="text-xs text-ink/50">
+                      Support {Math.round(item.confidence * 100)}%
+                    </Text>
+                  ) : null}
+                  {item.nodeSource ? (
+                    <Text className="text-xs text-ink/50">
+                      Node source {item.nodeSource}
+                    </Text>
+                  ) : null}
+                </View>
+                {sourceUrl ? (
+                  <Pressable
+                    accessibilityRole="link"
+                    className="mt-2 self-start"
+                    onPress={() => void Linking.openURL(sourceUrl)}
+                  >
+                    <Text className="text-sm font-semibold text-leaf">
+                      Open source
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <Text className="mt-2 text-sm leading-5 text-ink/60">
+          No linked CPS or Health Canada Drug Interactions chunks are attached
+          to this candidate yet.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function FullTextEvidencePanel({
+  candidate,
+}: {
+  candidate: PubMedInteractionCandidate;
+}) {
+  const evidence = candidate.candidateEvidence ?? [];
+  const applicabilityRows = getApplicabilityRows(candidate.applicability);
+
+  if (!candidate.fullTextProcessed && !evidence.length && !applicabilityRows.length) {
+    return null;
+  }
+
+  return (
+    <View className="mt-3 rounded-lg border border-ink/10 bg-mist p-3">
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm font-semibold text-ink">
+          Full-text evidence
+        </Text>
+        <Text className="rounded-md bg-white px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+          {candidate.fullTextEvidenceCount || evidence.length} chunks
+        </Text>
+      </View>
+      {applicabilityRows.length ? (
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {applicabilityRows.map((row) => (
+            <Text
+              className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-ink/70"
+              key={`${row.label}:${row.value}`}
+            >
+              {row.label}: {row.value}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+      {evidence.length ? (
+        <View className="mt-3 gap-3">
+          {evidence.map((item) => (
+            <View
+              className="rounded-lg border border-ink/10 bg-white p-3"
+              key={`${item.chunk.id}:${item.supportType}`}
+            >
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Text className="rounded-md bg-leaf/10 px-2 py-1 text-xs font-semibold uppercase text-leaf">
+                  {evidenceSourceLabels[item.chunk.sourceType] ??
+                    item.chunk.sourceType}
+                </Text>
+                <Text className="rounded-md bg-ink/10 px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+                  {supportTypeLabels[item.supportType] ?? item.supportType}
+                </Text>
+                {item.chunk.label ? (
+                  <Text className="text-xs font-semibold text-ink/60">
+                    {item.chunk.label}
+                  </Text>
+                ) : null}
+              </View>
+              {item.quote ? (
+                <Text className="mt-2 text-sm leading-5 text-ink/70">
+                  "{item.quote}"
+                </Text>
+              ) : (
+                <Text className="mt-2 text-sm leading-5 text-ink/70">
+                  {truncateEvidenceText(item.chunk.content)}
+                </Text>
+              )}
+              {item.quote ? (
+                <Text className="mt-2 text-xs leading-5 text-ink/50">
+                  Chunk text: {truncateEvidenceText(item.chunk.content)}
+                </Text>
+              ) : null}
+              {item.chunk.sourceType === "table" ? (
+                <StructuredTablePreview
+                  structuredContent={item.chunk.structuredContent}
+                />
+              ) : null}
+              <View className="mt-2 flex-row flex-wrap gap-3">
+                <Text className="text-xs text-ink/50">
+                  Chunk {formatChunkId(item.chunk.id)}
+                </Text>
+                {item.chunk.sectionTitle ? (
+                  <Text className="text-xs text-ink/50">
+                    {item.chunk.sectionTitle}
+                  </Text>
+                ) : null}
+                {item.chunk.sectionPath.length ? (
+                  <Text className="text-xs text-ink/50">
+                    Path: {item.chunk.sectionPath.join(" / ")}
+                  </Text>
+                ) : null}
+                {item.chunk.relevanceScore !== null &&
+                item.chunk.relevanceScore !== undefined ? (
+                  <Text className="text-xs text-ink/50">
+                    Relevance {Math.round(item.chunk.relevanceScore * 100)}%
+                  </Text>
+                ) : null}
+                {item.chunk.extractionConfidence !== null &&
+                item.chunk.extractionConfidence !== undefined ? (
+                  <Text className="text-xs text-ink/50">
+                    Extraction{" "}
+                    {Math.round(item.chunk.extractionConfidence * 100)}%
+                  </Text>
+                ) : null}
+                {item.confidence !== null && item.confidence !== undefined ? (
+                  <Text className="text-xs text-ink/50">
+                    Support {Math.round(item.confidence * 100)}%
+                  </Text>
+                ) : null}
+                {item.chunk.license ? (
+                  <Text className="text-xs text-ink/50">
+                    {item.chunk.license}
+                  </Text>
+                ) : null}
+              </View>
+              {item.chunk.sourceUrl ? (
+                <Pressable
+                  accessibilityRole="link"
+                  className="mt-2 self-start"
+                  onPress={() => void Linking.openURL(item.chunk.sourceUrl!)}
+                >
+                  <Text className="text-sm font-semibold text-leaf">
+                    Open source
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      ) : (
+        <Text className="mt-2 text-sm leading-5 text-ink/60">
+          Full text was processed, but no linked evidence chunks are attached to
+          this candidate.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function DecisionTracePanel({
+  candidate,
+}: {
+  candidate: PubMedInteractionCandidate;
+}) {
+  const trace = getCandidateDecisionTrace(candidate);
+
+  if (!trace) {
+    return null;
+  }
+
+  return (
+    <View className="mt-3 rounded-lg border border-ink/10 bg-mist p-3">
+      <Text className="text-sm font-semibold text-ink">Decision trace</Text>
+      {trace.retrievalNotes ? (
+        <Text className="mt-2 text-sm leading-5 text-ink/60">
+          Retrieval: {trace.retrievalNotes}
+        </Text>
+      ) : null}
+      {trace.chunkAssessments.length ? (
+        <View className="mt-3 gap-2">
+          {trace.chunkAssessments.map((assessment, index) => (
+            <View
+              className="rounded-lg border border-ink/10 bg-white p-3"
+              key={`${assessment.chunkId ?? "trace"}:${index}`}
+            >
+              <View className="flex-row flex-wrap items-center gap-2">
+                {assessment.chunkId ? (
+                  <Text className="rounded-md bg-ink/10 px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+                    Chunk {formatChunkId(assessment.chunkId)}
+                  </Text>
+                ) : null}
+                {assessment.supportType ? (
+                  <Text className="rounded-md bg-leaf/10 px-2 py-1 text-xs font-semibold uppercase text-leaf">
+                    {supportTypeLabels[
+                      assessment.supportType as keyof typeof supportTypeLabels
+                    ] ??
+                      assessment.supportType}
+                  </Text>
+                ) : null}
+              </View>
+              {assessment.quote ? (
+                <Text className="mt-2 text-sm leading-5 text-ink/70">
+                  "{assessment.quote}"
+                </Text>
+              ) : null}
+              <Text className="mt-2 text-sm leading-5 text-ink/70">
+                {assessment.conclusion}
+              </Text>
+              {assessment.limitation ? (
+                <Text className="mt-1 text-xs leading-5 text-ink/50">
+                  Limitation: {assessment.limitation}
+                </Text>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {trace.finalRationale ? (
+        <Text className="mt-3 text-sm leading-5 text-ink/70">
+          Final rationale: {trace.finalRationale}
+        </Text>
+      ) : null}
+      {trace.uncertainty.length ? (
+        <View className="mt-3 flex-row flex-wrap gap-2">
+          {trace.uncertainty.map((item) => (
+            <Text
+              className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-ink/60"
+              key={item}
+            >
+              {item}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function StructuredTablePreview({
+  structuredContent,
+}: {
+  structuredContent: Record<string, unknown>;
+}) {
+  const rows = Array.isArray(structuredContent.rows)
+    ? structuredContent.rows.slice(0, 3)
+    : [];
+
+  if (!rows.length) {
+    return null;
+  }
+
+  return (
+    <View className="mt-2 gap-2">
+      {rows.map((row, index) => {
+        const cells =
+          row && typeof row === "object" && "cells" in row
+            ? (row.cells as Record<string, unknown>)
+            : {};
+
+        return (
+          <View className="rounded-md bg-mist p-2" key={index}>
+            {Object.entries(cells)
+              .slice(0, 4)
+              .map(([label, value]) => (
+                <Text className="text-xs leading-5 text-ink/70" key={label}>
+                  {label}: {String(value)}
+                </Text>
+              ))}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function ResolutionFlagPanel({
   flags,
 }: {
@@ -616,6 +1111,257 @@ function ResolutionFlagPanel({
       ))}
     </View>
   );
+}
+
+function getApplicabilityRows(
+  applicability: PubMedInteractionCandidate["applicability"],
+): Array<{ label: string; value: string }> {
+  if (!applicability || typeof applicability !== "object") {
+    return [];
+  }
+
+  const record = applicability as Record<string, unknown>;
+  const rows = [
+    ["Context", record.evidenceContext],
+    ["Route", record.route],
+    ["Dose", record.dose],
+    ["Population", record.population],
+    ["Timing", record.timing],
+  ] as const;
+
+  return rows.flatMap(([label, value]) =>
+    typeof value === "string" && value.trim()
+      ? [{ label, value: value.trim() }]
+      : [],
+  );
+}
+
+function getDiagnosticRows(
+  value: Record<string, unknown> | undefined,
+  limit: number,
+): Array<{ label: string; value: string }> {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  return Object.entries(value)
+    .flatMap(([label, item]) => {
+      const formattedValue = formatDiagnosticValue(item);
+
+      return formattedValue ? [{ label, value: formattedValue }] : [];
+    })
+    .slice(0, limit);
+}
+
+function formatDiagnosticValue(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? `${value}` : value.toFixed(2);
+  }
+
+  if (typeof value === "string") {
+    return truncateDiagnosticValue(value);
+  }
+
+  if (Array.isArray(value)) {
+    const text = value
+      .map((item) => formatDiagnosticValue(item))
+      .filter((item): item is string => Boolean(item))
+      .join(", ");
+
+    return text ? truncateDiagnosticValue(text) : null;
+  }
+
+  if (typeof value === "object") {
+    return truncateDiagnosticValue(JSON.stringify(value));
+  }
+
+  return null;
+}
+
+function truncateDiagnosticValue(value: string): string {
+  return value.length > 110 ? `${value.slice(0, 107)}...` : value;
+}
+
+function getCandidateActionCategory(
+  candidate: PubMedInteractionCandidate,
+): InteractionActionCategory {
+  return (
+    candidate.interactionActionCategory ??
+    candidate.aiReview?.actionCategory ??
+    inferActionCategoryFromSeverity(candidate.severity)
+  );
+}
+
+function inferActionCategoryFromSeverity(
+  severity: PubMedInteractionCandidate["severity"],
+): InteractionActionCategory {
+  switch (severity) {
+    case "contraindicated":
+      return "avoid_combination";
+    case "major":
+      return "consider_therapy_modification";
+    case "moderate":
+      return "monitor_therapy";
+    case "minor":
+      return "no_action_needed";
+    default:
+      return "monitor_therapy";
+  }
+}
+
+function getCandidateDecisionTrace(candidate: PubMedInteractionCandidate) {
+  const trace = candidate.aiDecisionTrace ?? candidate.aiReview?.decisionTrace;
+
+  if (!trace || typeof trace !== "object") {
+    return null;
+  }
+
+  const record = trace as Record<string, unknown>;
+  const chunkAssessments = Array.isArray(record.chunkAssessments)
+    ? record.chunkAssessments.flatMap((item) => {
+        if (!item || typeof item !== "object") {
+          return [];
+        }
+
+        const assessment = item as Record<string, unknown>;
+        const conclusion =
+          typeof assessment.conclusion === "string"
+            ? assessment.conclusion.trim()
+            : "";
+
+        if (!conclusion) {
+          return [];
+        }
+
+        return [
+          {
+            chunkId:
+              typeof assessment.chunkId === "string"
+                ? assessment.chunkId
+                : undefined,
+            conclusion,
+            limitation:
+              typeof assessment.limitation === "string"
+                ? assessment.limitation
+                : null,
+            quote:
+              typeof assessment.quote === "string" ? assessment.quote : null,
+            supportType:
+              typeof assessment.supportType === "string"
+                ? assessment.supportType
+                : undefined,
+          },
+        ];
+      })
+    : [];
+
+  return {
+    chunkAssessments,
+    finalRationale:
+      typeof record.finalRationale === "string"
+        ? record.finalRationale
+        : undefined,
+    retrievalNotes:
+      typeof record.retrievalNotes === "string"
+        ? record.retrievalNotes
+        : undefined,
+    uncertainty: Array.isArray(record.uncertainty)
+      ? record.uncertainty.filter((item): item is string => typeof item === "string")
+      : [],
+  };
+}
+
+function formatChunkId(chunkId: string): string {
+  return chunkId.length > 8 ? chunkId.slice(0, 8) : chunkId;
+}
+
+function truncateEvidenceText(value: string): string {
+  return value.length > 700 ? `${value.slice(0, 697)}...` : value;
+}
+
+function getMonographFactRows(
+  facts: NonNullable<
+    PubMedInteractionCandidate["monographEvidence"]
+  >[number]["extractedFacts"],
+): Array<{ label: string; value: string }> {
+  const rows: Array<{ key: keyof typeof monographFactLabels; label: string }> = [
+    { key: "roles", label: monographFactLabels.roles },
+    { key: "enzymes", label: monographFactLabels.enzymes },
+    { key: "transporters", label: monographFactLabels.transporters },
+    { key: "receptors", label: monographFactLabels.receptors },
+    { key: "management", label: monographFactLabels.management },
+  ];
+
+  return rows.flatMap((row) => {
+    const value = facts[row.key];
+
+    if (!Array.isArray(value) || !value.length) {
+      return [];
+    }
+
+    return [
+      {
+        label: row.label,
+        value: value.slice(0, 4).join(", "),
+      },
+    ];
+  });
+}
+
+function getMonographEvidenceUrl(
+  item: NonNullable<
+    PubMedInteractionCandidate["monographEvidence"]
+  >[number],
+): string | null {
+  const cpsId = readStringIdentifier(item.nodeIdentifiers, "cps_id");
+  const drugCode = readStringIdentifier(item.nodeIdentifiers, "drug_code");
+
+  if (item.sourceKind === "cps_monograph" && cpsId) {
+    return getCpsMonographUrl(cpsId);
+  }
+
+  if (item.sourceKind === "health_canada_product_monograph" && drugCode) {
+    return getHealthCanadaDpdUrl(drugCode);
+  }
+
+  return null;
+}
+
+function readStringIdentifier(
+  identifiers: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = identifiers[key];
+
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (Array.isArray(value) && typeof value[0] === "string" && value[0].trim()) {
+    return value[0].trim();
+  }
+
+  return null;
+}
+
+function getHealthCanadaDpdUrl(drugCode: string) {
+  return `https://health-products.canada.ca/dpd-bdpp/info.do?code=${encodeURIComponent(
+    drugCode,
+  )}&lang=en`;
+}
+
+function getCpsMonographUrl(cpsId: string) {
+  return `https://cps2.pharmacists.ca/document/monograph/${encodeURIComponent(
+    cpsId,
+  )}`;
 }
 
 function MonographCoveragePanel({
@@ -1291,6 +2037,30 @@ const aiVerdictFilterOptions: {
   { label: "Likely reject", value: "likely_reject" },
 ];
 
+const aiDecisionFilterOptions: {
+  label: string;
+  value: PubMedAiDecision | "all";
+}[] = [
+  { label: "All", value: "all" },
+  { label: "Publishable", value: "publishable" },
+  { label: "Needs context", value: "needs_context" },
+  { label: "Insufficient evidence", value: "insufficient_evidence" },
+  { label: "Reject", value: "reject" },
+];
+
+const automationTierFilterOptions: {
+  label: string;
+  value: PubMedAutomationTier | "all";
+}[] = [
+  { label: "All", value: "all" },
+  { label: "Auto publish ready", value: "auto_publish_ready" },
+  { label: "Sample for audit", value: "sample_for_audit" },
+  { label: "Needs context", value: "needs_context" },
+  { label: "Auto reject", value: "auto_reject" },
+  { label: "Quarantine", value: "quarantine" },
+  { label: "Benchmark", value: "benchmark" },
+];
+
 const resolutionFilterOptions: {
   label: string;
   value: "all" | "resolved" | "unresolved";
@@ -1411,10 +2181,64 @@ const severityLabels = {
   unknown: "Unknown",
 };
 
+const actionCategoryLabels: Record<InteractionActionCategory, string> = {
+  avoid_combination: "Avoid combination",
+  consider_therapy_modification: "Consider therapy modification",
+  monitor_therapy: "Monitor therapy",
+  no_action_needed: "No action needed",
+  no_known_interaction: "No known interaction",
+};
+
+const actionCategoryStyles: Record<
+  InteractionActionCategory,
+  { badge: string }
+> = {
+  avoid_combination: {
+    badge: "border-red-200 bg-red-50 text-red-700",
+  },
+  consider_therapy_modification: {
+    badge: "border-orange-200 bg-orange-50 text-orange-700",
+  },
+  monitor_therapy: {
+    badge: "border-yellow-200 bg-yellow-50 text-yellow-700",
+  },
+  no_action_needed: {
+    badge: "border-blue-200 bg-blue-50 text-blue-700",
+  },
+  no_known_interaction: {
+    badge: "border-green-200 bg-green-50 text-green-700",
+  },
+};
+
 const aiVerdictLabels = {
   likely_publishable: "Likely publishable",
   likely_reject: "Likely reject",
   needs_human_review: "Needs review",
+};
+
+const aiDecisionLabels: Record<PubMedAiDecision, string> = {
+  insufficient_evidence: "Insufficient evidence",
+  needs_context: "Needs context",
+  publishable: "Publishable",
+  reject: "Reject",
+};
+
+const automationTierLabels: Record<PubMedAutomationTier, string> = {
+  auto_publish_ready: "Auto publish ready",
+  auto_reject: "Auto reject",
+  benchmark: "Benchmark",
+  needs_context: "Needs context",
+  quarantine: "Quarantine",
+  sample_for_audit: "Sample for audit",
+};
+
+const automationTierStyles: Record<PubMedAutomationTier, string> = {
+  auto_publish_ready: "border-green-200 bg-green-50 text-green-700",
+  auto_reject: "border-coral/30 bg-coral/10 text-coral",
+  benchmark: "border-blue-200 bg-blue-50 text-blue-700",
+  needs_context: "border-yellow-200 bg-yellow-50 text-yellow-700",
+  quarantine: "border-orange-200 bg-orange-50 text-orange-700",
+  sample_for_audit: "border-leaf/30 bg-leaf/10 text-leaf",
 };
 
 const sourceCoverageLabels = {
@@ -1423,6 +2247,43 @@ const sourceCoverageLabels = {
   health_canada_only: "Health Canada-only",
   possible_source_match: "Possible CPS/Health Canada match",
   source_conflict: "Source conflict",
+};
+
+const evidenceSourceLabels = {
+  abstract: "Abstract",
+  figure_caption: "Figure caption",
+  figure_interpretation: "Figure interpretation",
+  paragraph: "Paragraph",
+  supplement: "Supplement",
+  table: "Table",
+};
+
+const supportTypeLabels = {
+  contradicts_or_limits: "Limits",
+  source_silent: "Silent",
+  supports_interaction: "Interaction",
+  supports_management: "Management",
+  supports_mechanism: "Mechanism",
+  supports_severity: "Severity",
+};
+
+const monographSourceKindLabels = {
+  cps_monograph: "CPS",
+  health_canada_product_monograph: "Health Canada",
+};
+
+const sideLabels = {
+  shared: "Shared",
+  source: "Source",
+  target: "Target",
+};
+
+const monographFactLabels = {
+  enzymes: "Enzymes",
+  management: "Management",
+  receptors: "Receptors",
+  roles: "Roles",
+  transporters: "Transporters",
 };
 
 function candidateHasFlag(

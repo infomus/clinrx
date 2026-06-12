@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Pressable, Text, View } from "react-native";
 
 import { checkPublishedInteractions } from "@clinrx/api";
-import type { InteractionResult } from "@clinrx/types";
+import type { InteractionActionCategory, InteractionResult } from "@clinrx/types";
 
 import { supabase } from "@/lib/supabase";
 import { useInteractionCheckerStore } from "@/state/interactionChecker";
@@ -40,7 +40,23 @@ export function InteractionChecker() {
         throw new OnlineConnectionRequiredError();
       }
 
-      return checkPublishedInteractions(supabase, selectedNodeIds);
+      return checkPublishedInteractions(supabase, selectedNodeIds, {
+        aiCacheTtlSeconds: 86400,
+        aiInferenceMode: "on_miss_or_uncertain",
+        captureEvaluation: true,
+        evaluationCaptureMode: "async",
+        evaluationSamplingReason: "manual",
+        evaluationSampleRate: 1,
+        evaluationSetId: "interaction-runtime-live-calibration",
+        evaluationSetName: "Live runtime checker calibration",
+        inputLabels: Object.fromEntries(
+          demoDrugs.map((drug) => [drug.id, drug.name]),
+        ),
+        retrieveRuntimeEvidence: true,
+        resultCacheTtlSeconds: 86400,
+        useAiInference: true,
+        useResultCache: true,
+      });
     },
   });
 
@@ -117,10 +133,15 @@ export function InteractionChecker() {
             ))}
           </View>
         ) : (
-          <Text className="mt-3 leading-6 text-ink/70">
-            No known interaction in the current evidence base. This is an
-            educational tool and does not prove the combination is safe.
-          </Text>
+          <View className="mt-4 rounded-lg border border-green-200 bg-green-50 p-4">
+            <Text className="text-sm font-semibold uppercase text-green-700">
+              No known interaction
+            </Text>
+            <Text className="mt-2 leading-6 text-ink/70">
+              No known interaction in the current evidence base. This is an
+              educational tool and does not prove the combination is safe.
+            </Text>
+          </View>
         )}
       </View>
     </>
@@ -135,13 +156,19 @@ class OnlineConnectionRequiredError extends Error {
 }
 
 function InteractionResultCard({ result }: { result: InteractionResult }) {
+  const actionCategory =
+    result.interaction.actionCategory ??
+    inferActionCategoryFromSeverity(result.interaction.severity);
+  const style = actionCategoryStyles[actionCategory];
+  const isRuntimeAi = result.interaction.source === "RuntimeAI";
+
   return (
-    <View className="rounded-lg border border-coral/30 bg-coral/10 p-4">
-      <Text className="text-sm font-semibold uppercase text-coral">
-        {result.interaction.severity}
+    <View className={`rounded-lg border p-4 ${style.panel}`}>
+      <Text className={`text-sm font-semibold uppercase ${style.text}`}>
+        {actionCategoryLabels[actionCategory]}
       </Text>
       <Text className="mt-2 text-base font-semibold text-ink">
-        Published interaction found
+        {isRuntimeAi ? "AI evidence assessment" : "Published interaction found"}
       </Text>
       {result.interaction.mechanism ? (
         <Text className="mt-2 leading-6 text-ink/70">
@@ -154,6 +181,9 @@ function InteractionResultCard({ result }: { result: InteractionResult }) {
         </Text>
       ) : null}
       <Text className="mt-3 text-sm text-ink/60">
+        Severity: {result.interaction.severity}
+      </Text>
+      <Text className="mt-1 text-sm text-ink/60">
         Evidence: {result.interaction.evidenceLevel ?? "not specified"}
       </Text>
       <Text className="mt-1 text-sm text-ink/60">
@@ -163,3 +193,54 @@ function InteractionResultCard({ result }: { result: InteractionResult }) {
     </View>
   );
 }
+
+function inferActionCategoryFromSeverity(
+  severity: InteractionResult["interaction"]["severity"],
+): InteractionActionCategory {
+  switch (severity) {
+    case "contraindicated":
+      return "avoid_combination";
+    case "major":
+      return "consider_therapy_modification";
+    case "moderate":
+      return "monitor_therapy";
+    case "minor":
+      return "no_action_needed";
+    default:
+      return "monitor_therapy";
+  }
+}
+
+const actionCategoryLabels: Record<InteractionActionCategory, string> = {
+  avoid_combination: "Avoid combination",
+  consider_therapy_modification: "Consider therapy modification",
+  monitor_therapy: "Monitor therapy",
+  no_action_needed: "No action needed",
+  no_known_interaction: "No known interaction",
+};
+
+const actionCategoryStyles: Record<
+  InteractionActionCategory,
+  { panel: string; text: string }
+> = {
+  avoid_combination: {
+    panel: "border-red-200 bg-red-50",
+    text: "text-red-700",
+  },
+  consider_therapy_modification: {
+    panel: "border-orange-200 bg-orange-50",
+    text: "text-orange-700",
+  },
+  monitor_therapy: {
+    panel: "border-yellow-200 bg-yellow-50",
+    text: "text-yellow-700",
+  },
+  no_action_needed: {
+    panel: "border-blue-200 bg-blue-50",
+    text: "text-blue-700",
+  },
+  no_known_interaction: {
+    panel: "border-green-200 bg-green-50",
+    text: "text-green-700",
+  },
+};

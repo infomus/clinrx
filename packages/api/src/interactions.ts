@@ -13,12 +13,48 @@ interface InteractionRpcRow {
 }
 
 interface CheckInteractionsFunctionResponse {
+  cache?: {
+    enabled: boolean;
+    graphVersion?: string;
+    hitCount: number;
+    missCount: number;
+    pairCount: number;
+  };
+  evaluation?: {
+    captureMode?: "async" | "sync";
+    error?: string;
+    queued?: boolean;
+    requestCount?: number;
+    requestIds?: string[];
+    runIds?: string[];
+    setId?: string;
+  };
   interactions?: InteractionRpcRow[];
+}
+
+export interface CheckPublishedInteractionsOptions {
+  aiCacheTtlSeconds?: number;
+  aiInferenceMode?: "always" | "on_miss_or_uncertain";
+  calibrationModelPanel?: boolean;
+  calibrationModels?: string[];
+  captureEvaluation?: boolean;
+  evaluationCaptureMode?: "async" | "sync";
+  evaluationSamplingReason?: string;
+  evaluationSampleRate?: number;
+  evaluationSetId?: string;
+  evaluationSetName?: string;
+  forceEvaluationCapture?: boolean;
+  inputLabels?: Record<string, string>;
+  retrieveRuntimeEvidence?: boolean;
+  resultCacheTtlSeconds?: number;
+  useAiInference?: boolean;
+  useResultCache?: boolean;
 }
 
 export async function checkPublishedInteractions(
   client: SupabaseClient,
   nodeIds: readonly string[],
+  options: CheckPublishedInteractionsOptions = {},
 ): Promise<InteractionResult[]> {
   const input = checkInteractionsInputSchema.parse({ nodeIds });
 
@@ -27,7 +63,23 @@ export async function checkPublishedInteractions(
       "check-interactions",
       {
         body: {
+          aiCacheTtlSeconds: options.aiCacheTtlSeconds,
+          aiInferenceMode: options.aiInferenceMode,
+          calibrationModelPanel: options.calibrationModelPanel,
+          calibrationModels: options.calibrationModels,
+          captureEvaluation: options.captureEvaluation ?? false,
+          evaluationCaptureMode: options.evaluationCaptureMode,
+          evaluationSamplingReason: options.evaluationSamplingReason,
+          evaluationSampleRate: options.evaluationSampleRate,
+          evaluationSetId: options.evaluationSetId,
+          evaluationSetName: options.evaluationSetName,
+          forceEvaluationCapture: options.forceEvaluationCapture,
+          inputLabels: options.inputLabels,
           nodeIds: input.nodeIds,
+          retrieveRuntimeEvidence: options.retrieveRuntimeEvidence,
+          resultCacheTtlSeconds: options.resultCacheTtlSeconds,
+          useAiInference: options.useAiInference,
+          useResultCache: options.useResultCache,
         },
       },
     );

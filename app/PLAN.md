@@ -1,5 +1,7 @@
 # ClinRx App Plan
 
+This is an early planning artifact. The active implementation is now in `apps/mobile`, shared packages are in `packages/*`, and the current technical direction is documented in `ARCHITECTURE.md`. Use this file for product framing only, not current implementation status.
+
 ## Product Direction
 
 ClinRx is a care-first workflow application for Canadian pharmacy teams. The initial product should help pharmacists see clearer clinical signals, manage work calmly, and document judgment without adding busywork.
@@ -39,7 +41,7 @@ The first app version should prove one high-value workflow end to end:
 
 ## Technical Starting Point
 
-Decide these before implementation:
+These were initial planning questions. Current implementation choices are tracked in `ARCHITECTURE.md` and the repo-level `README.md`.
 
 - Frontend framework and app hosting target
 - Backend/runtime choice
