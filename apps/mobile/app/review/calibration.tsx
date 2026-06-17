@@ -300,7 +300,6 @@ function RuntimeEvaluationCard({
 }) {
   const { request } = item;
   const [showAllRuns, setShowAllRuns] = useState(false);
-  const [showSourceEvidence, setShowSourceEvidence] = useState(false);
   const rawRunItems = item.runs.length
     ? item.runs
     : item.run
@@ -319,7 +318,6 @@ function RuntimeEvaluationCard({
       ? toDraftLabel(labelsByKey.get(verdictKey)!)
       : createEmptyLabel(null));
   const hasVerdict = Boolean(verdictLabel.finalCategory);
-  const sourceEvidence = dedupeRequestEvidence(runItems);
 
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
@@ -374,27 +372,6 @@ function RuntimeEvaluationCard({
             }
           />
         </View>
-        {sourceEvidence.length ? (
-          <View className="mt-3">
-            <Pressable
-              accessibilityRole="button"
-              className="self-start rounded-md border border-ink/10 bg-white px-3 py-2"
-              onPress={() => setShowSourceEvidence((current) => !current)}
-            >
-              <Text className="text-xs font-semibold uppercase text-ink/70">
-                {showSourceEvidence ? "Hide" : "Show"} retrieved source evidence
-                ({sourceEvidence.length})
-              </Text>
-            </Pressable>
-            {showSourceEvidence ? (
-              <View className="mt-3 gap-3">
-                {sourceEvidence.map((row) => (
-                  <EvidenceRow evidence={row} key={row.id} />
-                ))}
-              </View>
-            ) : null}
-          </View>
-        ) : null}
       </View>
 
       {!hasVerdict ? (
@@ -449,29 +426,6 @@ function RuntimeEvaluationCard({
       )}
     </View>
   );
-}
-
-function dedupeRequestEvidence(
-  runItems: RuntimeRunItem[],
-): InteractionEvaluationRequestWithRun["evidence"] {
-  const seen = new Set<string>();
-  const out: InteractionEvaluationRequestWithRun["evidence"] = [];
-
-  for (const item of runItems) {
-    for (const row of item.evidence) {
-      const key = `${row.sourceKind}|${row.supportType}|${row.content}`;
-
-      if (seen.has(key)) {
-        continue;
-      }
-
-      seen.add(key);
-      // model-neutral: drop the per-run "used in answer" flag for the shared view
-      out.push({ ...row, usedInAnswer: false });
-    }
-  }
-
-  return out;
 }
 
 function RunMatrixPanel({ items }: { items: RuntimeRunItem[] }) {
