@@ -141,7 +141,11 @@ Each retrieved-evidence row carries up to three badges.
 - **Used** = the model grounded its answer on this chunk. Used evidence is sorted to the top.
 - No "Used" badge = retrieved and shown to the model, but it didn't cite it.
 
-Each row also shows the quote/excerpt and, when available, **Open PubMed** / **Open source** links.
+Each row also shows the quote/excerpt and a **link to the source** so you can open it and cross-check that the extraction is faithful:
+- **PubMed** chunks → **Open PubMed** (the record) and **Open full text (PMC)** when an open-access full text exists.
+- Chunks with a stored URL → **Open source**.
+- **Monographs** (CPS / Health Canada) aren't directly URL-addressable in our index, so you get **Find monograph** — a name-scoped web search to pull the real product monograph and compare.
+- **Published interactions** (`kg_edge`) are internal references, so they show no external link.
 
 ### What the badge *combinations* tell you
 - **Used + supports_interaction** from **cps_monograph** → the gold case: the model leaned on a direct, authoritative source.
@@ -156,16 +160,17 @@ You set the **correct category once per pair** — your ground-truth verdict at 
 
 Below the evidence, the white box is the **label form for that one model's answer.** It's short — three things, all autosaving:
 
-1. **Failure modes** (pick all that apply) — what specifically went wrong with this answer. Pick **None** if it's clean. Options explained below.
-2. **Missing context** (pick all that apply) — what *you'd* have needed to judge confidently: *CPS comparison · Full article · MedEffect/safety · NHP data · NOC context · Route/form · Severity/management.* (Use **Route/form** when the answer ignores that the interaction depends on formulation/route — e.g. systemic vs topical.)
+1. **Failure modes** (pick all that apply — multi-select) — what specifically went wrong with this answer. Pick **None** if it's clean. Each option has an **ⓘ** info dot next to it explaining what it means; the same explanations are listed below.
+2. **Missing context** (pick all that apply) — what *you'd* have needed to judge confidently: *CPS comparison · Full article · MedEffect/safety · NHP data · NOC context · Route/form · Severity/management.* Each also has an **ⓘ** info dot. (Use **Route/form** when the answer ignores that the interaction depends on formulation/route — e.g. systemic vs topical.)
 3. **Reviewer note** — free text; anything else worth saying.
 
-You don't have to flag anything — if the model nailed it, pick **None** (or just leave a note) and move on. The **Match / Off by N** badge already tells you whether the category agreed with your verdict; failure modes capture *why* when it didn't.
+The **Match / Off by N** badge at the top of each card already tells you whether the model's category agreed with your verdict; failure modes capture *why* when it didn't.
+
+> **Required when it's wrong.** If the model's category **did not match** your ground-truth verdict, the card *requires* you to pick at least one failure mode (the **None** option is hidden, and a red prompt appears until you do). When the category matched, flagging is optional — pick **None** or just move on.
 
 ### Failure mode options explained
 
-- **None** — the answer is acceptable; nothing went wrong. (Pick this to positively mark a clean answer.)
-- **Wrong ingredient/product/class level** — it resolved one side at the wrong granularity: a specific product when it should be the ingredient/class, or vice versa (e.g. it grabbed one brand instead of the moiety, or generalized to a whole class when only one salt was meant).
+- **None** — the answer is acceptable; nothing went wrong. (Pick this to positively mark a clean answer. Hidden when the category didn't match your verdict.)
 - **Evidence unsupported** — it claims an interaction the retrieved evidence doesn't actually support (no source names both drugs / no real interaction shown).
 - **Mechanism-only inference** — it inferred an interaction purely from a shared mechanism ("both affect CYP3A4") without any evidence the pair actually interacts. The classic over-warning trap.
 - **Table/figure misread** — it pulled a number or conclusion from a table or figure and read it wrong (wrong row, wrong units, wrong arm).

@@ -461,6 +461,14 @@ function ModelRunEvaluation({
   );
   const usedEvidence = evidence.filter((row) => row.usedInAnswer);
   const otherEvidence = evidence.filter((row) => !row.usedInAnswer);
+  // When the model's category disagrees with the pharmacist's ground-truth
+  // verdict, a failure mode is required: she must say what went wrong.
+  const categoryMismatch = Boolean(
+    groundTruthCategory &&
+      groundTruthCategory !== "unclear" &&
+      run.answerCategory &&
+      run.answerCategory !== groundTruthCategory,
+  );
 
   return (
     <View className="rounded-lg border border-ink/10 bg-mist p-3">
@@ -516,6 +524,8 @@ function ModelRunEvaluation({
       <EvidencePanel
         otherEvidence={otherEvidence}
         usedEvidence={usedEvidence}
+        sourceName={run.resolvedSourceNode?.canonicalName ?? null}
+        targetName={run.resolvedTargetNode?.canonicalName ?? null}
       />
 
       <ModelVsGroundTruth
@@ -527,9 +537,14 @@ function ModelRunEvaluation({
       <View className="mt-4 gap-3 rounded-lg border border-ink/10 bg-white p-3">
         <MultiSelectControl
           label="Failure modes"
+          infoText="What specifically went wrong with this answer. Pick None if it's clean. Tap the i next to any option for its meaning."
+          descriptions={failureModeDescriptions}
           options={failureModeOptions}
           selected={label.failureModes ?? []}
           onChange={(failureModes) => setLabel({ ...label, failureModes })}
+          required={categoryMismatch}
+          hideNone={categoryMismatch}
+          requiredMessage="This answer didn't match your ground-truth verdict — pick at least one failure mode to say what went wrong."
         />
         <MissingContextControl
           selected={label.missingContext ?? []}
@@ -683,9 +698,13 @@ function TracePanel({ trace }: { trace: Record<string, unknown> }) {
 
 function EvidencePanel({
   otherEvidence,
+  sourceName,
+  targetName,
   usedEvidence,
 }: {
   otherEvidence: InteractionEvaluationRequestWithRun["evidence"];
+  sourceName: string | null;
+  targetName: string | null;
   usedEvidence: InteractionEvaluationRequestWithRun["evidence"];
 }) {
   const rows = [...usedEvidence, ...otherEvidence];
@@ -698,7 +717,12 @@ function EvidencePanel({
       {rows.length ? (
         <View className="mt-3 gap-3">
           {rows.map((row) => (
-            <EvidenceRow evidence={row} key={row.id} />
+            <EvidenceRow
+              evidence={row}
+              key={row.id}
+              sourceName={sourceName}
+              targetName={targetName}
+            />
           ))}
         </View>
       ) : (
@@ -710,13 +734,45 @@ function EvidencePanel({
   );
 }
 
+function EvidenceLink({ label, url }: { label: string; url: string }) {
+  return (
+    <Pressable
+      accessibilityRole="link"
+      onPress={() => void Linking.openURL(url)}
+    >
+      <Text className="text-sm font-semibold text-leaf underline">{label}</Text>
+    </Pressable>
+  );
+}
+
 function EvidenceRow({
   evidence,
+  sourceName,
+  targetName,
 }: {
   evidence: InteractionEvaluationRequestWithRun["evidence"][number];
+  sourceName: string | null;
+  targetName: string | null;
 }) {
   const pmid = getMetadataString(evidence.metadata, "pmid");
+  const pmcid = getMetadataString(evidence.metadata, "pmcid");
   const sourceUrl = getMetadataString(evidence.metadata, "sourceUrl");
+  const side = getMetadataString(evidence.metadata, "side");
+  const isMonograph = evidence.sourceKind === "cps_monograph" ||
+    evidence.sourceKind === "health_canada_product_monograph";
+  // Monographs aren't URL-addressable in our index, so offer a name-scoped
+  // search the pharmacist can use to pull the real monograph and cross-check.
+  const monographName = side === "source"
+    ? sourceName
+    : side === "target"
+      ? targetName
+      : (sourceName ?? targetName);
+  const monographSearchUrl = isMonograph && monographName
+    ? `https://www.google.com/search?q=${
+      encodeURIComponent(`${monographName} product monograph drug interactions`)
+    }`
+    : null;
+  const hasLink = Boolean(pmid || pmcid || sourceUrl || monographSearchUrl);
 
   return (
     <View className="rounded-lg border border-ink/10 bg-mist p-3">
@@ -741,28 +797,29 @@ function EvidenceRow({
       <Text className="mt-2 text-sm leading-5 text-ink/60">
         {truncate(evidence.content, 700)}
       </Text>
-      <View className="mt-2 flex-row flex-wrap gap-3">
+      <View className="mt-2 flex-row flex-wrap items-center gap-3">
         {pmid ? (
-          <Pressable
-            accessibilityRole="link"
-            onPress={() =>
-              void Linking.openURL(`https://pubmed.ncbi.nlm.nih.gov/${pmid}/`)
-            }
-          >
-            <Text className="text-sm font-semibold text-leaf">
-              Open PubMed
-            </Text>
-          </Pressable>
+          <EvidenceLink
+            label="Open PubMed"
+            url={`https://pubmed.ncbi.nlm.nih.gov/${pmid}/`}
+          />
         ) : null}
-        {sourceUrl ? (
-          <Pressable
-            accessibilityRole="link"
-            onPress={() => void Linking.openURL(sourceUrl)}
-          >
-            <Text className="text-sm font-semibold text-leaf">
-              Open source
-            </Text>
-          </Pressable>
+        {pmcid ? (
+          <EvidenceLink
+            label="Open full text (PMC)"
+            url={`https://www.ncbi.nlm.nih.gov/pmc/articles/${pmcid}/`}
+          />
+        ) : null}
+        {sourceUrl ? <EvidenceLink label="Open source" url={sourceUrl} /> : null}
+        {monographSearchUrl ? (
+          <EvidenceLink label="Find monograph" url={monographSearchUrl} />
+        ) : null}
+        {!hasLink ? (
+          <Text className="text-xs text-ink/40">
+            {evidence.sourceKind === "kg_edge"
+              ? "Published interaction (internal reference)"
+              : "No external source link available"}
+          </Text>
         ) : null}
       </View>
     </View>
@@ -868,59 +925,152 @@ function SegmentedControl<T extends string>({
   );
 }
 
+function InfoDot({
+  active,
+  onPress,
+}: {
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="More information"
+      hitSlop={8}
+      onPress={onPress}
+      className={`h-4 w-4 items-center justify-center rounded-full border ${
+        active ? "border-leaf bg-leaf" : "border-ink/40 bg-white"
+      }`}
+    >
+      <Text
+        className={`text-[10px] font-bold ${
+          active ? "text-white" : "text-ink/50"
+        }`}
+      >
+        i
+      </Text>
+    </Pressable>
+  );
+}
+
 function MultiSelectControl<T extends string>({
+  descriptions,
+  hideNone,
+  infoText,
   label,
   onChange,
   options,
+  required,
+  requiredMessage,
   selected,
 }: {
+  descriptions?: Partial<Record<T, string>>;
+  hideNone?: boolean;
+  infoText?: string;
   label: string;
   onChange: (value: T[]) => void;
   options: Array<{ label: string; value: T }>;
+  required?: boolean;
+  requiredMessage?: string;
   selected: T[];
 }) {
+  const [activeInfo, setActiveInfo] = useState<string | null>(null);
+  const shownOptions = hideNone
+    ? options.filter((option) => option.value !== ("none" as T))
+    : options;
+  const hasRealSelection = selected.some((value) => value !== ("none" as T));
+  const unmet = Boolean(required) && !hasRealSelection;
+  const activeText = activeInfo === "__question"
+    ? infoText
+    : activeInfo
+      ? descriptions?.[activeInfo as T]
+      : null;
+
   return (
     <View>
-      <Text className="text-sm font-semibold text-ink">{label}</Text>
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm font-semibold text-ink">{label}</Text>
+        {infoText ? (
+          <InfoDot
+            active={activeInfo === "__question"}
+            onPress={() =>
+              setActiveInfo((prev) =>
+                prev === "__question" ? null : "__question"
+              )
+            }
+          />
+        ) : null}
+        {required ? (
+          <Text className="text-xs font-semibold uppercase text-coral">
+            Required
+          </Text>
+        ) : null}
+      </View>
+      {activeText ? (
+        <View className="mt-2 rounded-md border border-ink/15 bg-mist p-2">
+          <Text className="text-xs leading-4 text-ink/70">{activeText}</Text>
+        </View>
+      ) : null}
       <View className="mt-2 flex-row flex-wrap gap-2">
-        {options.map((option) => {
+        {shownOptions.map((option) => {
           const isSelected = selected.includes(option.value);
+          const desc = descriptions?.[option.value];
 
           return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: isSelected }}
-              className={`rounded-lg border px-3 py-2 ${
-                isSelected ? "border-leaf bg-leaf" : "border-ink/10 bg-white"
-              }`}
+            <View
+              className="flex-row items-center gap-1"
               key={option.value}
-              onPress={() => {
-                if (option.value === ("none" as T)) {
-                  onChange(isSelected ? [] : [option.value]);
-                  return;
-                }
-
-                const withoutNone = selected.filter(
-                  (value) => value !== ("none" as T),
-                );
-                onChange(
-                  isSelected
-                    ? withoutNone.filter((value) => value !== option.value)
-                    : [...withoutNone, option.value],
-                );
-              }}
             >
-              <Text
-                className={`text-sm font-semibold ${
-                  isSelected ? "text-white" : "text-ink"
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                className={`rounded-lg border px-3 py-2 ${
+                  isSelected ? "border-leaf bg-leaf" : "border-ink/10 bg-white"
                 }`}
+                onPress={() => {
+                  if (option.value === ("none" as T)) {
+                    onChange(isSelected ? [] : [option.value]);
+                    return;
+                  }
+
+                  const withoutNone = selected.filter(
+                    (value) => value !== ("none" as T),
+                  );
+                  onChange(
+                    isSelected
+                      ? withoutNone.filter((value) => value !== option.value)
+                      : [...withoutNone, option.value],
+                  );
+                }}
               >
-                {option.label}
-              </Text>
-            </Pressable>
+                <Text
+                  className={`text-sm font-semibold ${
+                    isSelected ? "text-white" : "text-ink"
+                  }`}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+              {desc ? (
+                <InfoDot
+                  active={activeInfo === option.value}
+                  onPress={() =>
+                    setActiveInfo((prev) =>
+                      prev === option.value ? null : option.value
+                    )
+                  }
+                />
+              ) : null}
+            </View>
           );
         })}
       </View>
+      {unmet ? (
+        <Text className="mt-2 text-xs font-semibold text-coral">
+          {requiredMessage ??
+            "Required — pick at least one failure mode."}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -932,11 +1082,33 @@ function MissingContextControl({
   onChange: (value: PubMedCalibrationMissingContext[]) => void;
   selected: PubMedCalibrationMissingContext[];
 }) {
+  const [activeInfo, setActiveInfo] = useState<
+    PubMedCalibrationMissingContext | "__question" | null
+  >(null);
+  const activeText = activeInfo === "__question"
+    ? "What you'd have needed to judge this answer confidently. Leave on None if nothing was missing."
+    : activeInfo
+      ? missingContextDescriptions[activeInfo]
+      : null;
+
   return (
     <View>
-      <Text className="text-sm font-semibold text-ink">
-        Missing context, if any
-      </Text>
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm font-semibold text-ink">
+          Missing context, if any
+        </Text>
+        <InfoDot
+          active={activeInfo === "__question"}
+          onPress={() =>
+            setActiveInfo((prev) => (prev === "__question" ? null : "__question"))
+          }
+        />
+      </View>
+      {activeText ? (
+        <View className="mt-2 rounded-md border border-ink/15 bg-mist p-2">
+          <Text className="text-xs leading-4 text-ink/70">{activeText}</Text>
+        </View>
+      ) : null}
       <View className="mt-2 flex-row flex-wrap gap-2">
         <Pressable
           accessibilityRole="button"
@@ -956,31 +1128,43 @@ function MissingContextControl({
         </Pressable>
         {missingContextOptions.map((option) => {
           const isSelected = selected.includes(option.value);
+          const desc = missingContextDescriptions[option.value];
 
           return (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: isSelected }}
-              className={`rounded-lg border px-3 py-2 ${
-                isSelected ? "border-leaf bg-leaf" : "border-ink/10 bg-white"
-              }`}
-              key={option.value}
-              onPress={() =>
-                onChange(
-                  isSelected
-                    ? selected.filter((value) => value !== option.value)
-                    : [...selected, option.value],
-                )
-              }
-            >
-              <Text
-                className={`text-sm font-semibold ${
-                  isSelected ? "text-white" : "text-ink"
+            <View className="flex-row items-center gap-1" key={option.value}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                className={`rounded-lg border px-3 py-2 ${
+                  isSelected ? "border-leaf bg-leaf" : "border-ink/10 bg-white"
                 }`}
+                onPress={() =>
+                  onChange(
+                    isSelected
+                      ? selected.filter((value) => value !== option.value)
+                      : [...selected, option.value],
+                  )
+                }
               >
-                {option.label}
-              </Text>
-            </Pressable>
+                <Text
+                  className={`text-sm font-semibold ${
+                    isSelected ? "text-white" : "text-ink"
+                  }`}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+              {desc ? (
+                <InfoDot
+                  active={activeInfo === option.value}
+                  onPress={() =>
+                    setActiveInfo((prev) =>
+                      prev === option.value ? null : option.value
+                    )
+                  }
+                />
+              ) : null}
+            </View>
           );
         })}
       </View>
@@ -1066,16 +1250,26 @@ function calculateMetrics(
         (label?.missingContext && label.missingContext.length > 0) ||
         (label?.notes && label.notes.trim().length > 0),
     );
-  const reviewed = runItems.filter(({ requestId, runItem }) =>
-    isTouched(labelFor(requestId, runItem.run.id))
-  ).length;
-  // Cards she flagged with at least one real failure mode (beyond "None").
-  const flagged = runItems.filter(({ requestId, runItem }) => {
+  const hasRealFailure = (label: DraftInteractionLabel | null) =>
+    Boolean(label?.failureModes?.some((mode) => mode !== "none"));
+  // A card is reviewed once she's recorded anything on it; but when the model's
+  // category disagreed with her verdict, it isn't complete until she's named a
+  // real failure mode (mirrors the required-on-mismatch rule in the form).
+  const reviewed = runItems.filter(({ requestId, runItem }) => {
     const label = labelFor(requestId, runItem.run.id);
-    return Boolean(
-      label?.failureModes?.some((mode) => mode !== "none"),
+    const verdict = verdictByRequest.get(requestId);
+    const mismatch = Boolean(
+      verdict &&
+        verdict !== "unclear" &&
+        runItem.run.answerCategory &&
+        runItem.run.answerCategory !== verdict,
     );
+    return mismatch ? hasRealFailure(label) : isTouched(label);
   }).length;
+  // Cards she flagged with at least one real failure mode (beyond "None").
+  const flagged = runItems.filter(({ requestId, runItem }) =>
+    hasRealFailure(labelFor(requestId, runItem.run.id))
+  ).length;
 
   const categoryScorable = runItems.filter(({ requestId, runItem }) => {
     const verdict = verdictByRequest.get(requestId);
@@ -1420,73 +1614,11 @@ const matrixCategoryStyles: Record<
   },
 };
 
-const entityResolutionOptions: Array<{
-  label: string;
-  value: PubMedCalibrationResolutionAssessment;
-}> = [
-  { label: "Correct", value: "correct" },
-  { label: "Wrong level", value: "wrong_level" },
-  { label: "Wrong node", value: "wrong_node" },
-  { label: "Unresolved/unclear", value: "unresolved_unclear" },
-];
-
-const evidenceRetrievalOptions: Array<{
-  label: string;
-  value: PubMedEvidenceRetrievalAssessment;
-}> = [
-  { label: "Correct", value: "correct" },
-  { label: "Incomplete", value: "incomplete" },
-  { label: "Wrong", value: "wrong" },
-  { label: "Not assessed", value: "not_assessed" },
-];
-
-const aiInterpretationOptions: Array<{
-  label: string;
-  value: PubMedAiInterpretationAssessment;
-}> = [
-  { label: "Correct", value: "correct" },
-  { label: "Partially correct", value: "partially_correct" },
-  { label: "Wrong", value: "wrong" },
-  { label: "Not assessed", value: "not_assessed" },
-];
-
-const managementOptions: Array<{
-  label: string;
-  value: PubMedCalibrationSeverityManagementAssessment;
-}> = [
-  { label: "Acceptable", value: "acceptable" },
-  { label: "Needs revision", value: "needs_revision" },
-  { label: "Wrong", value: "wrong" },
-  { label: "Not assessed", value: "not_assessed" },
-];
-
-const generalizationOptions: Array<{
-  label: string;
-  value: PubMedGeneralizationAssessment;
-}> = [
-  { label: "Appropriate", value: "appropriate" },
-  { label: "Too broad", value: "too_broad" },
-  { label: "Too narrow", value: "too_narrow" },
-  { label: "Unclear", value: "unclear" },
-  { label: "Not assessed", value: "not_assessed" },
-];
-
-const automationOptions: Array<{
-  label: string;
-  value: PubMedAutomationSafetyAssessment;
-}> = [
-  { label: "Safe to automate", value: "safe_to_automate" },
-  { label: "Sample only", value: "sample_only" },
-  { label: "Quarantine", value: "quarantine" },
-  { label: "Not assessed", value: "not_assessed" },
-];
-
 const failureModeOptions: Array<{
   label: string;
   value: PubMedCalibrationFailureMode;
 }> = [
   { label: "None", value: "none" },
-  { label: "Wrong ingredient/product/class level", value: "wrong_ingredient_product_class_level" },
   { label: "Evidence unsupported", value: "evidence_does_not_support_interaction" },
   { label: "Mechanism-only inference", value: "mechanism_only_inference" },
   { label: "Table/figure misread", value: "table_or_figure_misread" },
@@ -1497,6 +1629,30 @@ const failureModeOptions: Array<{
   { label: "Contradicted evidence", value: "contradicted_evidence" },
   { label: "Missing source coverage", value: "missing_source_coverage" },
 ];
+
+const failureModeDescriptions: Partial<
+  Record<PubMedCalibrationFailureMode, string>
+> = {
+  none: "The answer is acceptable; nothing went wrong. Pick this to positively mark a clean answer.",
+  evidence_does_not_support_interaction:
+    "It claims an interaction the retrieved evidence doesn't actually support (no source names both drugs / no real interaction shown).",
+  mechanism_only_inference:
+    "It inferred an interaction purely from a shared mechanism (\"both affect CYP3A4\") with no evidence the pair actually interacts. The classic over-warning trap.",
+  table_or_figure_misread:
+    "It pulled a number or conclusion from a table or figure and read it wrong (wrong row, wrong units, wrong study arm).",
+  severity_unsupported:
+    "The direction may be right but the severity rating (monitor vs avoid, etc.) isn't backed by the evidence — over- or under-stated.",
+  management_unsupported:
+    "The monitoring/management advice it gives isn't supported by the sources (made-up dose change, wrong monitoring parameter).",
+  narrow_applicability_overgeneralized:
+    "It stretched narrow evidence (one case report, an animal study, a single population) into a broad clinical warning. Includes applying systemic evidence to a topical/local product.",
+  duplicate_or_stale_evidence:
+    "It leaned on duplicated or outdated evidence (superseded label, old/retracted data, the same chunk counted twice).",
+  contradicted_evidence:
+    "It ignored or contradicted a retrieved source that limits or argues against the interaction.",
+  missing_source_coverage:
+    "The answer needed a source that simply wasn't retrieved; it answered with a known gap in the evidence set.",
+};
 
 const missingContextOptions: Array<{
   label: string;
@@ -1510,3 +1666,16 @@ const missingContextOptions: Array<{
   { label: "Route/form", value: "route_form" },
   { label: "Severity/management", value: "severity_management" },
 ];
+
+const missingContextDescriptions: Partial<
+  Record<PubMedCalibrationMissingContext, string>
+> = {
+  cps_comparison: "You'd want to compare against the CPS monograph to judge confidently.",
+  full_article: "You'd need the full article (not just the abstract) to verify.",
+  medeffect_safety: "You'd need MedEffect / safety-signal data to judge.",
+  nhp_data: "You'd need natural-health-product data to judge.",
+  noc_context: "You'd need Notice of Compliance / approval context to judge.",
+  route_form:
+    "The answer ignores that the interaction depends on formulation/route (e.g. systemic vs topical).",
+  severity_management: "You'd need clearer severity/management guidance to judge.",
+};
