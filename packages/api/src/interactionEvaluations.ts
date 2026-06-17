@@ -215,12 +215,16 @@ export async function getInteractionEvaluationSetRequests(
       const requestRuns = runsByRequestId.get(request.id) ?? [];
       const hydratedRuns = requestRuns.map((run): InteractionEvaluationRun => ({
         ...run,
-        resolvedSourceNode: run.resolvedSourceId
-          ? (nodeById.get(run.resolvedSourceId) ?? null)
-          : null,
-        resolvedTargetNode: run.resolvedTargetId
-          ? (nodeById.get(run.resolvedTargetId) ?? null)
-          : null,
+        resolvedSourceNode: resolveRunNode(
+          run,
+          run.resolvedSourceId,
+          nodeById,
+        ),
+        resolvedTargetNode: resolveRunNode(
+          run,
+          run.resolvedTargetId,
+          nodeById,
+        ),
       }));
       const run = hydratedRuns[0] ?? null;
       const runItems = hydratedRuns.map((
@@ -506,6 +510,70 @@ async function getKgNodesById(
   }
 
   return nodesById;
+}
+
+// Prefer the live kg_node row, but the anon reviewer cannot read the server-only
+// kg_node table (CPS-derived content is server-only), so fall back to the
+// resolved-entities snapshot captured on the run itself, which carries the same
+// node identity (id, canonical_name, type, source). This keeps the reviewer
+// from showing "Unresolved" for nodes it cannot read directly.
+function resolveRunNode(
+  run: InteractionEvaluationRun,
+  nodeId: string | null | undefined,
+  nodeById: Map<string, KgNode>,
+): KgNode | null {
+  if (!nodeId) {
+    return null;
+  }
+
+  return nodeById.get(nodeId) ??
+    nodeFromResolvedEntities(run.resolvedEntities, nodeId);
+}
+
+function nodeFromResolvedEntities(
+  resolvedEntities: Record<string, unknown>,
+  nodeId: string,
+): KgNode | null {
+  const inputs = (resolvedEntities as { inputs?: unknown }).inputs;
+
+  if (!Array.isArray(inputs)) {
+    return null;
+  }
+
+  for (const input of inputs) {
+    if (!input || typeof input !== "object") {
+      continue;
+    }
+
+    const record = input as Record<string, unknown>;
+
+    if (record.id !== nodeId) {
+      continue;
+    }
+
+    const canonicalName = typeof record.canonical_name === "string"
+      ? record.canonical_name
+      : typeof record.canonicalName === "string"
+        ? record.canonicalName
+        : null;
+
+    if (!canonicalName) {
+      return null;
+    }
+
+    return {
+      canonicalName,
+      createdAt: typeof record.created_at === "string" ? record.created_at : "",
+      id: nodeId,
+      identifiers: (record.identifiers as KgNode["identifiers"]) ?? {},
+      source: typeof record.source === "string" ? record.source : "",
+      summary: typeof record.summary === "string" ? record.summary : null,
+      type: (record.type as KgNode["type"]) ?? "drug",
+      uncertainty: (record.uncertainty as KgNode["uncertainty"]) ?? {},
+    };
+  }
+
+  return null;
 }
 
 function mapInteractionEvaluationSetRow(
