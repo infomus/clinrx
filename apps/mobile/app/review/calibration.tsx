@@ -525,54 +525,6 @@ function ModelRunEvaluation({
       />
 
       <View className="mt-4 gap-3 rounded-lg border border-ink/10 bg-white p-3">
-        <SegmentedControl
-          label="Were the right entities selected?"
-          options={entityResolutionOptions}
-          selected={label.entityResolutionAssessment ?? undefined}
-          onSelect={(entityResolutionAssessment) =>
-            setLabel({ ...label, entityResolutionAssessment })
-          }
-        />
-        <SegmentedControl
-          label="Did retrieval find the right evidence?"
-          options={evidenceRetrievalOptions}
-          selected={label.evidenceRetrievalAssessment ?? undefined}
-          onSelect={(evidenceRetrievalAssessment) =>
-            setLabel({ ...label, evidenceRetrievalAssessment })
-          }
-        />
-        <SegmentedControl
-          label="Did AI interpret the evidence correctly?"
-          options={aiInterpretationOptions}
-          selected={label.aiInterpretationAssessment ?? undefined}
-          onSelect={(aiInterpretationAssessment) =>
-            setLabel({ ...label, aiInterpretationAssessment })
-          }
-        />
-        <SegmentedControl
-          label="Is the management/action wording acceptable?"
-          options={managementOptions}
-          selected={label.managementAssessment ?? undefined}
-          onSelect={(managementAssessment) =>
-            setLabel({ ...label, managementAssessment })
-          }
-        />
-        <SegmentedControl
-          label="Did the system generalize appropriately?"
-          options={generalizationOptions}
-          selected={label.generalizationAssessment ?? undefined}
-          onSelect={(generalizationAssessment) =>
-            setLabel({ ...label, generalizationAssessment })
-          }
-        />
-        <SegmentedControl
-          label="Would this be safe to automate?"
-          options={automationOptions}
-          selected={label.automationSafetyAssessment ?? undefined}
-          onSelect={(automationSafetyAssessment) =>
-            setLabel({ ...label, automationSafetyAssessment })
-          }
-        />
         <MultiSelectControl
           label="Failure modes"
           options={failureModeOptions}
@@ -582,15 +534,6 @@ function ModelRunEvaluation({
         <MissingContextControl
           selected={label.missingContext ?? []}
           onChange={(missingContext) => setLabel({ ...label, missingContext })}
-        />
-        <TextInputBlock
-          label="What rule, prompt, or source would have prevented an issue?"
-          maxLength={1500}
-          placeholder="Leave blank if there is no issue to prevent."
-          value={label.suggestedPrevention ?? ""}
-          onChangeText={(suggestedPrevention) =>
-            setLabel({ ...label, suggestedPrevention })
-          }
         />
         <TextInputBlock
           label="Reviewer note"
@@ -843,11 +786,7 @@ function MetricsPanel({ metrics }: { metrics: RuntimeMetrics }) {
           label="Category correct"
           value={formatRate(metrics.categoryAccuracy)}
         />
-        <MetricPill
-          label="Safe to automate"
-          value={metrics.safeToAutomate}
-        />
-        <MetricPill label="Quarantine" value={metrics.quarantine} />
+        <MetricPill label="Flagged" value={metrics.flagged} />
       </View>
     </View>
   );
@@ -1099,13 +1038,6 @@ function calculateMetrics(
       runItem,
     }))
   );
-  const labels = runItems.flatMap(({ requestId, runItem }) => {
-    const labelKey = getLabelKey(requestId, runItem.run.id);
-    const draft = draftsByLabelKey[labelKey];
-    const saved = savedLabelsByKey.get(labelKey);
-
-    return draft ? [draft] : saved ? [toDraftLabel(saved)] : [];
-  });
   // Per-request ground-truth verdict (runId null) — the pharmacist no longer
   // re-picks a category on each model card, so model correctness is derived by
   // comparing the model's answer to this verdict.
@@ -1119,8 +1051,8 @@ function calculateMetrics(
   }
   const verdicts = verdictByRequest.size;
 
-  // A model card counts as reviewed once she's made the bottom-line
-  // safe-to-automate call on it.
+  // A model card counts as reviewed once she's recorded anything on it:
+  // a failure mode (including "None"), a missing-context tag, or a note.
   const labelFor = (requestId: string, runId: string) => {
     const labelKey = getLabelKey(requestId, runId);
     return draftsByLabelKey[labelKey] ??
@@ -1128,11 +1060,20 @@ function calculateMetrics(
         ? toDraftLabel(savedLabelsByKey.get(labelKey)!)
         : null);
   };
-  const reviewed = runItems.filter(({ requestId, runItem }) => {
+  const isTouched = (label: DraftInteractionLabel | null) =>
+    Boolean(
+      (label?.failureModes && label.failureModes.length > 0) ||
+        (label?.missingContext && label.missingContext.length > 0) ||
+        (label?.notes && label.notes.trim().length > 0),
+    );
+  const reviewed = runItems.filter(({ requestId, runItem }) =>
+    isTouched(labelFor(requestId, runItem.run.id))
+  ).length;
+  // Cards she flagged with at least one real failure mode (beyond "None").
+  const flagged = runItems.filter(({ requestId, runItem }) => {
     const label = labelFor(requestId, runItem.run.id);
     return Boolean(
-      label?.automationSafetyAssessment &&
-        label.automationSafetyAssessment !== "not_assessed",
+      label?.failureModes?.some((mode) => mode !== "none"),
     );
   }).length;
 
@@ -1150,36 +1091,11 @@ function calculateMetrics(
   return {
     totalRequests: items.length,
     verdicts,
-    aiAccuracy: rate(
-      labels,
-      (label) => label.aiInterpretationAssessment === "correct",
-    ),
     categoryAccuracy: categoryAccuracyValue,
-    entityAccuracy: rate(
-      labels,
-      (label) => label.entityResolutionAssessment === "correct",
-    ),
-    quarantine: labels.filter(
-      (label) => label.automationSafetyAssessment === "quarantine",
-    ).length,
-    retrievalAccuracy: rate(
-      labels,
-      (label) => label.evidenceRetrievalAssessment === "correct",
-    ),
+    flagged,
     reviewed,
-    safeToAutomate: labels.filter(
-      (label) => label.automationSafetyAssessment === "safe_to_automate",
-    ).length,
     total: runItems.length,
   };
-}
-
-function rate<T>(items: T[], predicate: (item: T) => boolean): number {
-  if (!items.length) {
-    return 0;
-  }
-
-  return items.filter(predicate).length / items.length;
 }
 
 function createEmptyLabel(
@@ -1420,13 +1336,9 @@ function getMetadataString(
 }
 
 interface RuntimeMetrics {
-  aiAccuracy: number;
   categoryAccuracy: number;
-  entityAccuracy: number;
-  quarantine: number;
-  retrievalAccuracy: number;
+  flagged: number;
   reviewed: number;
-  safeToAutomate: number;
   total: number;
   totalRequests: number;
   verdicts: number;
@@ -1574,7 +1486,6 @@ const failureModeOptions: Array<{
   value: PubMedCalibrationFailureMode;
 }> = [
   { label: "None", value: "none" },
-  { label: "Wrong entity", value: "wrong_entity_resolution" },
   { label: "Wrong ingredient/product/class level", value: "wrong_ingredient_product_class_level" },
   { label: "Evidence unsupported", value: "evidence_does_not_support_interaction" },
   { label: "Mechanism-only inference", value: "mechanism_only_inference" },

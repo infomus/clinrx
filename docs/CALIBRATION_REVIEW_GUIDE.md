@@ -43,10 +43,10 @@ A single card naming the set you're reviewing. There's only one (the 50‑reques
 
 ### Metrics pills
 A running summary of **your own labels** so far — they update as you go:
-- **Model reviews** — how many model answers you've given a safe-to-automate call (out of 200).
+- **Verdicts entered** — how many pairs have your ground-truth verdict set (carried over from pass 1).
+- **Model reviews** — how many model answers you've recorded anything on (a failure mode, missing-context tag, or note), out of 200.
 - **Category correct** — share of model answers whose category matches your ground-truth verdict (computed automatically).
-- **Entities correct / Retrieval correct / AI understood** — share you marked "correct" on those questions.
-- **Safe to automate / Quarantine** — counts of answers you flagged each way.
+- **Flagged** — number of model answers you tagged with at least one failure mode (beyond "None").
 
 ### Autosave
 There is **no Save button.** Every choice you make is saved instantly. The status line confirms it ("Saving…" / saved). You can close the tab and come back; your labels persist.
@@ -154,20 +154,29 @@ Each row also shows the quote/excerpt and, when available, **Open PubMed** / **O
 
 You set the **correct category once per pair** — your ground-truth verdict at the top of the card (carried over from pass 1; editable). You do **not** re-pick a category for each model. Instead, each model card shows a read-only **"This model's answer vs your ground truth"** strip — the model's category, your verdict, and an automatic **Match / Off by N** badge — and then asks you to judge *how the model got there.*
 
-Below the evidence, the white box is the **label form for that one model's answer.** Everything autosaves. The questions:
+Below the evidence, the white box is the **label form for that one model's answer.** It's short — three things, all autosaving:
 
-1. **Were the right entities selected?** — *Correct · Wrong level · Wrong node · Unresolved/unclear.* "Wrong level" = it resolved to a product when it should be the ingredient/class (or vice versa).
-2. **Did retrieval find the right evidence?** — *Correct · Incomplete · Wrong · Not assessed.*
-3. **Did AI interpret the evidence correctly?** — *Correct · Partially correct · Wrong · Not assessed.*
-4. **Is the management/action wording acceptable?** — *Acceptable · Needs revision · Wrong · Not assessed.*
-5. **Did the system generalize appropriately?** — *Appropriate · Too broad · Too narrow · Unclear · Not assessed.* ("Too broad" = it generalized narrow evidence — e.g. one animal study — into a broad warning.)
-6. **Would this be safe to automate?** — *Safe to automate · Sample only · Quarantine · Not assessed.* This is the bottom-line trust question: would you let the system serve this answer without a human?
-7. **Failure modes** (pick all that apply) — *None · Wrong entity · Wrong ingredient/product/class level · Evidence unsupported · Mechanism‑only inference · Table/figure misread · Severity unsupported · Management unsupported · Overgeneralized · Duplicate/stale · Contradicted evidence · Missing source coverage.*
-8. **Missing context** (pick all that apply) — *None · CPS comparison · Full article · MedEffect/safety · NHP data · NOC context · Route/form · Severity/management.* What you'd have needed to judge confidently.
-9. **What rule, prompt, or source would have prevented an issue?** — free text; your fix suggestion.
-10. **Reviewer note** — free text; anything else.
+1. **Failure modes** (pick all that apply) — what specifically went wrong with this answer. Pick **None** if it's clean. Options explained below.
+2. **Missing context** (pick all that apply) — what *you'd* have needed to judge confidently: *CPS comparison · Full article · MedEffect/safety · NHP data · NOC context · Route/form · Severity/management.* (Use **Route/form** when the answer ignores that the interaction depends on formulation/route — e.g. systemic vs topical.)
+3. **Reviewer note** — free text; anything else worth saying.
 
-You don't have to answer every field — make sure your **ground-truth verdict** is set at the top of the pair, then at minimum make the **safe-to-automate** call on each model; the rest sharpens the diagnosis.
+You don't have to flag anything — if the model nailed it, pick **None** (or just leave a note) and move on. The **Match / Off by N** badge already tells you whether the category agreed with your verdict; failure modes capture *why* when it didn't.
+
+### Failure mode options explained
+
+- **None** — the answer is acceptable; nothing went wrong. (Pick this to positively mark a clean answer.)
+- **Wrong ingredient/product/class level** — it resolved one side at the wrong granularity: a specific product when it should be the ingredient/class, or vice versa (e.g. it grabbed one brand instead of the moiety, or generalized to a whole class when only one salt was meant).
+- **Evidence unsupported** — it claims an interaction the retrieved evidence doesn't actually support (no source names both drugs / no real interaction shown).
+- **Mechanism-only inference** — it inferred an interaction purely from a shared mechanism ("both affect CYP3A4") without any evidence the pair actually interacts. The classic over-warning trap.
+- **Table/figure misread** — it pulled a number or conclusion from a table or figure and read it wrong (wrong row, wrong units, wrong arm).
+- **Severity unsupported** — the *direction* may be right but the **severity rating** (monitor vs avoid, etc.) isn't backed by the evidence — over- or under-stated.
+- **Management unsupported** — the monitoring/management advice it gives isn't supported by the sources (made-up dose change, wrong monitoring parameter, etc.).
+- **Overgeneralized** — it stretched narrow evidence (one case report, an animal study, a single population) into a broad clinical warning.
+- **Duplicate/stale** — it leaned on duplicated or outdated evidence (superseded label, retracted/old data, the same chunk counted twice).
+- **Contradicted evidence** — it ignored or contradicted a retrieved source that limits or argues against the interaction (a `contradicts_or_limits` chunk it didn't account for).
+- **Missing source coverage** — the answer needed a source that simply wasn't retrieved; it answered with a known gap in the evidence set.
+
+> Note: **route/form** problems (e.g. treating topical tacrolimus like oral) are captured with the **Missing context → Route/form** tag, and often also **Overgeneralized** if it applied systemic evidence to a local product.
 
 ---
 
@@ -176,7 +185,7 @@ You don't have to answer every field — make sure your **ground-truth verdict**
 1. Read the pair and set your **ground-truth verdict** at the top.
 2. Skim the **matrix** — do the models agree? Note outliers.
 3. For each detailed answer: check the **"model vs your ground truth"** strip (Match / Off by N), then the **Used evidence** — is it real, direct, and authoritative, or mechanism-only/thin?
-4. Make the **safe-to-automate** call. Add failure modes / missing context when something's off.
+4. Tag **failure modes** / **missing context** when something's off (or **None** when it's clean), and add a note if useful.
 5. Grade all **4** answers under each pair before moving on.
 
 **Watch especially for:** mechanism-only "interactions," narrow evidence generalized into broad warnings, "Unresolved" entities, ignored `contradicts_or_limits` evidence, and confident answers with thin or no **Used** evidence.
