@@ -300,6 +300,7 @@ function RuntimeEvaluationCard({
 }) {
   const { request } = item;
   const [showAllRuns, setShowAllRuns] = useState(false);
+  const [showSourceEvidence, setShowSourceEvidence] = useState(false);
   const rawRunItems = item.runs.length
     ? item.runs
     : item.run
@@ -308,6 +309,17 @@ function RuntimeEvaluationCard({
   const runItems = selectActiveMatrixRunItems(rawRunItems);
   const prioritizedRunItems = selectPriorityRunItems(runItems);
   const visibleRunItems = showAllRuns ? runItems : prioritizedRunItems;
+
+  // Pass-1 blind verdict: a single request-level label (runId null) holds the
+  // pharmacist's own ground-truth category. AI model answers stay hidden until
+  // this is set so the verdict is not anchored to the model consensus.
+  const verdictKey = getLabelKey(request.id, null);
+  const verdictLabel = draftsByLabelKey[verdictKey] ??
+    (labelsByKey.get(verdictKey)
+      ? toDraftLabel(labelsByKey.get(verdictKey)!)
+      : createEmptyLabel(null));
+  const hasVerdict = Boolean(verdictLabel.finalCategory);
+  const sourceEvidence = dedupeRequestEvidence(runItems);
 
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
@@ -335,8 +347,58 @@ function RuntimeEvaluationCard({
           : ""}
       </Text>
 
-      {runItems.length ? (
+      <View className="mt-4 rounded-lg border border-leaf/40 bg-leaf/5 p-3">
+        <Text className="text-sm font-semibold text-ink">
+          Your verdict (ground truth)
+        </Text>
+        <Text className="mt-1 text-xs leading-5 text-ink/60">
+          Choose the correct interaction category from your own clinical
+          judgment. The AI model answers stay hidden until you choose, so your
+          verdict is unbiased. Use "Unclear" if it genuinely cannot be
+          determined.
+        </Text>
+        <View className="mt-3">
+          <SegmentedControl
+            label="Correct interaction category"
+            options={categoryOptions}
+            selected={verdictLabel.finalCategory ?? undefined}
+            onSelect={(finalCategory) =>
+              setLabel(null, { ...verdictLabel, finalCategory })
+            }
+          />
+        </View>
+        {sourceEvidence.length ? (
+          <View className="mt-3">
+            <Pressable
+              accessibilityRole="button"
+              className="self-start rounded-md border border-ink/10 bg-white px-3 py-2"
+              onPress={() => setShowSourceEvidence((current) => !current)}
+            >
+              <Text className="text-xs font-semibold uppercase text-ink/70">
+                {showSourceEvidence ? "Hide" : "Show"} retrieved source evidence
+                ({sourceEvidence.length})
+              </Text>
+            </Pressable>
+            {showSourceEvidence ? (
+              <View className="mt-3 gap-3">
+                {sourceEvidence.map((row) => (
+                  <EvidenceRow evidence={row} key={row.id} />
+                ))}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
+      {!hasVerdict ? (
+        <Text className="mt-4 rounded-lg border border-ink/10 bg-mist p-3 text-sm leading-5 text-ink/60">
+          Choose your verdict above to reveal the AI model answers.
+        </Text>
+      ) : runItems.length ? (
         <View className="mt-4 gap-4">
+          <Text className="text-xs font-semibold uppercase text-ink/50">
+            AI model answers (revealed)
+          </Text>
           <RunMatrixPanel items={runItems} />
           {runItems.length > prioritizedRunItems.length ? (
             <View className="flex-row flex-wrap items-center justify-between gap-3 rounded-lg border border-ink/10 bg-white px-3 py-2">
@@ -380,6 +442,29 @@ function RuntimeEvaluationCard({
       )}
     </View>
   );
+}
+
+function dedupeRequestEvidence(
+  runItems: RuntimeRunItem[],
+): InteractionEvaluationRequestWithRun["evidence"] {
+  const seen = new Set<string>();
+  const out: InteractionEvaluationRequestWithRun["evidence"] = [];
+
+  for (const item of runItems) {
+    for (const row of item.evidence) {
+      const key = `${row.sourceKind}|${row.supportType}|${row.content}`;
+
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      // model-neutral: drop the per-run "used in answer" flag for the shared view
+      out.push({ ...row, usedInAnswer: false });
+    }
+  }
+
+  return out;
 }
 
 function RunMatrixPanel({ items }: { items: RuntimeRunItem[] }) {
@@ -770,6 +855,10 @@ function MetricsPanel({ metrics }: { metrics: RuntimeMetrics }) {
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
       <View className="flex-row flex-wrap gap-2">
+        <MetricPill
+          label="Verdicts"
+          value={`${metrics.verdicts}/${metrics.totalRequests}`}
+        />
         <MetricPill label="Reviewed" value={`${metrics.reviewed}/${metrics.total}`} />
         <MetricPill label="Category correct" value={formatRate(metrics.categoryAccuracy)} />
         <MetricPill label="Entities correct" value={formatRate(metrics.entityAccuracy)} />
@@ -1036,8 +1125,19 @@ function calculateMetrics(
     return draft ? [draft] : saved ? [toDraftLabel(saved)] : [];
   });
   const reviewed = labels.filter((label) => label.finalCategory).length;
+  const verdicts = items.filter((item) => {
+    const key = getLabelKey(item.request.id, null);
+    const draft = draftsByLabelKey[key];
+    const saved = savedLabelsByKey.get(key);
+
+    return Boolean(
+      (draft ?? (saved ? toDraftLabel(saved) : null))?.finalCategory,
+    );
+  }).length;
 
   return {
+    totalRequests: items.length,
+    verdicts,
     aiAccuracy: rate(
       labels,
       (label) => label.aiInterpretationAssessment === "correct",
@@ -1331,6 +1431,8 @@ interface RuntimeMetrics {
   reviewed: number;
   safeToAutomate: number;
   total: number;
+  totalRequests: number;
+  verdicts: number;
 }
 
 const categoryOptions: Array<{
