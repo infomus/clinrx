@@ -43,8 +43,8 @@ A single card naming the set you're reviewing. There's only one (the 50‑reques
 
 ### Metrics pills
 A running summary of **your own labels** so far — they update as you go:
-- **Reviewed** — how many model answers you've given a final category.
-- **Category correct** — of those, the share where your final category matched the AI's answer.
+- **Model reviews** — how many model answers you've given a safe-to-automate call (out of 200).
+- **Category correct** — share of model answers whose category matches your ground-truth verdict (computed automatically).
 - **Entities correct / Retrieval correct / AI understood** — share you marked "correct" on those questions.
 - **Safe to automate / Quarantine** — counts of answers you flagged each way.
 
@@ -152,30 +152,31 @@ Each row also shows the quote/excerpt and, when available, **Open PubMed** / **O
 
 ## 9. How to label an answer
 
+You set the **correct category once per pair** — your ground-truth verdict at the top of the card (carried over from pass 1; editable). You do **not** re-pick a category for each model. Instead, each model card shows a read-only **"This model's answer vs your ground truth"** strip — the model's category, your verdict, and an automatic **Match / Off by N** badge — and then asks you to judge *how the model got there.*
+
 Below the evidence, the white box is the **label form for that one model's answer.** Everything autosaves. The questions:
 
-1. **Final interaction category** — what *you* judge the correct category to be (the five categories above, or **Unclear**). The metrics compare this to the AI's answer.
-2. **Were the right entities selected?** — *Correct · Wrong level · Wrong node · Unresolved/unclear.* "Wrong level" = it resolved to a product when it should be the ingredient/class (or vice versa).
-3. **Did retrieval find the right evidence?** — *Correct · Incomplete · Wrong · Not assessed.*
-4. **Did AI interpret the evidence correctly?** — *Correct · Partially correct · Wrong · Not assessed.*
-5. **Is the management/action wording acceptable?** — *Acceptable · Needs revision · Wrong · Not assessed.*
-6. **Did the system generalize appropriately?** — *Appropriate · Too broad · Too narrow · Unclear · Not assessed.* ("Too broad" = it generalized narrow evidence — e.g. one animal study — into a broad warning.)
-7. **Would this be safe to automate?** — *Safe to automate · Sample only · Quarantine · Not assessed.* This is the bottom-line trust question: would you let the system serve this answer without a human?
-8. **Failure modes** (pick all that apply) — *None · Wrong entity · Wrong ingredient/product/class level · Evidence unsupported · Mechanism‑only inference · Table/figure misread · Severity unsupported · Management unsupported · Overgeneralized · Duplicate/stale · Contradicted evidence · Missing source coverage.*
-9. **Missing context** (pick all that apply) — *None · CPS comparison · Full article · MedEffect/safety · NHP data · NOC context · Route/form · Severity/management.* What you'd have needed to judge confidently.
-10. **What rule, prompt, or source would have prevented an issue?** — free text; your fix suggestion.
-11. **Reviewer note** — free text; anything else.
+1. **Were the right entities selected?** — *Correct · Wrong level · Wrong node · Unresolved/unclear.* "Wrong level" = it resolved to a product when it should be the ingredient/class (or vice versa).
+2. **Did retrieval find the right evidence?** — *Correct · Incomplete · Wrong · Not assessed.*
+3. **Did AI interpret the evidence correctly?** — *Correct · Partially correct · Wrong · Not assessed.*
+4. **Is the management/action wording acceptable?** — *Acceptable · Needs revision · Wrong · Not assessed.*
+5. **Did the system generalize appropriately?** — *Appropriate · Too broad · Too narrow · Unclear · Not assessed.* ("Too broad" = it generalized narrow evidence — e.g. one animal study — into a broad warning.)
+6. **Would this be safe to automate?** — *Safe to automate · Sample only · Quarantine · Not assessed.* This is the bottom-line trust question: would you let the system serve this answer without a human?
+7. **Failure modes** (pick all that apply) — *None · Wrong entity · Wrong ingredient/product/class level · Evidence unsupported · Mechanism‑only inference · Table/figure misread · Severity unsupported · Management unsupported · Overgeneralized · Duplicate/stale · Contradicted evidence · Missing source coverage.*
+8. **Missing context** (pick all that apply) — *None · CPS comparison · Full article · MedEffect/safety · NHP data · NOC context · Route/form · Severity/management.* What you'd have needed to judge confidently.
+9. **What rule, prompt, or source would have prevented an issue?** — free text; your fix suggestion.
+10. **Reviewer note** — free text; anything else.
 
-You don't have to answer every field — at minimum set the **final category** and the **safe-to-automate** call; the rest sharpens the diagnosis.
+You don't have to answer every field — make sure your **ground-truth verdict** is set at the top of the pair, then at minimum make the **safe-to-automate** call on each model; the rest sharpens the diagnosis.
 
 ---
 
 ## 10. A good review rhythm
 
-1. Read the pair and the **Expected** hint.
+1. Read the pair and set your **ground-truth verdict** at the top.
 2. Skim the **matrix** — do the models agree? Note outliers.
-3. For each detailed answer: glance at the **category + confidence**, then the **Used evidence** — is it real, direct, and authoritative, or mechanism-only/thin?
-4. Set your **final category** and **safe-to-automate** call. Add failure modes / missing context when something's off.
+3. For each detailed answer: check the **"model vs your ground truth"** strip (Match / Off by N), then the **Used evidence** — is it real, direct, and authoritative, or mechanism-only/thin?
+4. Make the **safe-to-automate** call. Add failure modes / missing context when something's off.
 5. Grade all **4** answers under each pair before moving on.
 
 **Watch especially for:** mechanism-only "interactions," narrow evidence generalized into broad warnings, "Unresolved" entities, ignored `contradicts_or_limits` evidence, and confident answers with thin or no **Used** evidence.

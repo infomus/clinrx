@@ -518,25 +518,13 @@ function ModelRunEvaluation({
         usedEvidence={usedEvidence}
       />
 
+      <ModelVsGroundTruth
+        modelName={formatModelName(run.model)}
+        modelCategory={run.answerCategory ?? null}
+        groundTruthCategory={groundTruthCategory ?? null}
+      />
+
       <View className="mt-4 gap-3 rounded-lg border border-ink/10 bg-white p-3">
-        <View className="flex-row flex-wrap items-center gap-2 rounded-lg border border-leaf/30 bg-leaf/5 px-3 py-2">
-          <Text className="text-xs font-semibold uppercase text-ink/60">
-            Your ground truth
-          </Text>
-          {groundTruthCategory ? (
-            <CategoryPill category={groundTruthCategory} />
-          ) : (
-            <Text className="text-xs font-semibold uppercase text-coral">
-              not set — choose your verdict above
-            </Text>
-          )}
-        </View>
-        <SegmentedControl
-          label={`Final interaction category for ${formatModelName(run.model)}`}
-          options={categoryOptions}
-          selected={label.finalCategory ?? undefined}
-          onSelect={(finalCategory) => setLabel({ ...label, finalCategory })}
-        />
         <SegmentedControl
           label="Were the right entities selected?"
           options={entityResolutionOptions}
@@ -612,6 +600,55 @@ function ModelRunEvaluation({
           onChangeText={(notes) => setLabel({ ...label, notes })}
         />
       </View>
+    </View>
+  );
+}
+
+function ModelVsGroundTruth({
+  groundTruthCategory,
+  modelCategory,
+  modelName,
+}: {
+  groundTruthCategory: InteractionEvaluationCategory | null;
+  modelCategory: InteractionEvaluationCategory | null;
+  modelName: string;
+}) {
+  const distance = categoryDistance(modelCategory, groundTruthCategory);
+  const matches = distance === 0;
+
+  return (
+    <View className="mt-4 gap-2 rounded-lg border border-leaf/30 bg-leaf/5 p-3">
+      <Text className="text-xs font-semibold uppercase text-ink/60">
+        This model's answer vs your ground truth
+      </Text>
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Text className="text-xs text-ink/60">{modelName} said</Text>
+        <CategoryPill category={modelCategory ?? "unclear"} />
+        <Text className="text-xs text-ink/60">· you said</Text>
+        {groundTruthCategory ? (
+          <CategoryPill category={groundTruthCategory} />
+        ) : (
+          <Text className="text-xs font-semibold uppercase text-coral">
+            verdict not set — set it above
+          </Text>
+        )}
+        {distance !== null ? (
+          <Text
+            className={`rounded-md px-2 py-1 text-xs font-semibold uppercase ${
+              matches
+                ? "bg-green-100 text-green-700"
+                : "bg-amber-100 text-amber-700"
+            }`}
+          >
+            {matches ? "Match" : `Off by ${distance}`}
+          </Text>
+        ) : null}
+      </View>
+      <Text className="text-xs leading-5 text-ink/50">
+        This comparison is automatic. Below, judge how the model got
+        here — evidence, interpretation, management, and whether it's safe to
+        automate.
+      </Text>
     </View>
   );
 }
@@ -1069,16 +1106,46 @@ function calculateMetrics(
 
     return draft ? [draft] : saved ? [toDraftLabel(saved)] : [];
   });
-  const reviewed = labels.filter((label) => label.finalCategory).length;
-  const verdicts = items.filter((item) => {
+  // Per-request ground-truth verdict (runId null) — the pharmacist no longer
+  // re-picks a category on each model card, so model correctness is derived by
+  // comparing the model's answer to this verdict.
+  const verdictByRequest = new Map<string, InteractionEvaluationCategory>();
+  for (const item of items) {
     const key = getLabelKey(item.request.id, null);
     const draft = draftsByLabelKey[key];
     const saved = savedLabelsByKey.get(key);
+    const verdict = (draft ?? (saved ? toDraftLabel(saved) : null))?.finalCategory;
+    if (verdict) verdictByRequest.set(item.request.id, verdict);
+  }
+  const verdicts = verdictByRequest.size;
 
+  // A model card counts as reviewed once she's made the bottom-line
+  // safe-to-automate call on it.
+  const labelFor = (requestId: string, runId: string) => {
+    const labelKey = getLabelKey(requestId, runId);
+    return draftsByLabelKey[labelKey] ??
+      (savedLabelsByKey.get(labelKey)
+        ? toDraftLabel(savedLabelsByKey.get(labelKey)!)
+        : null);
+  };
+  const reviewed = runItems.filter(({ requestId, runItem }) => {
+    const label = labelFor(requestId, runItem.run.id);
     return Boolean(
-      (draft ?? (saved ? toDraftLabel(saved) : null))?.finalCategory,
+      label?.automationSafetyAssessment &&
+        label.automationSafetyAssessment !== "not_assessed",
     );
   }).length;
+
+  const categoryScorable = runItems.filter(({ requestId, runItem }) => {
+    const verdict = verdictByRequest.get(requestId);
+    return Boolean(verdict && verdict !== "unclear" && runItem.run.answerCategory);
+  });
+  const categoryAccuracyValue = categoryScorable.length
+    ? categoryScorable.filter(
+      ({ requestId, runItem }) =>
+        verdictByRequest.get(requestId) === runItem.run.answerCategory,
+    ).length / categoryScorable.length
+    : 0;
 
   return {
     totalRequests: items.length,
@@ -1087,22 +1154,7 @@ function calculateMetrics(
       labels,
       (label) => label.aiInterpretationAssessment === "correct",
     ),
-    categoryAccuracy: rate(
-      runItems,
-      ({ requestId, runItem }) => {
-        const labelKey = getLabelKey(requestId, runItem.run.id);
-        const label = draftsByLabelKey[labelKey] ??
-          (savedLabelsByKey.get(labelKey)
-            ? toDraftLabel(savedLabelsByKey.get(labelKey)!)
-            : null);
-
-        return Boolean(
-          label?.finalCategory &&
-            runItem.run.answerCategory &&
-            label.finalCategory === runItem.run.answerCategory,
-        );
-      },
-    ),
+    categoryAccuracy: categoryAccuracyValue,
     entityAccuracy: rate(
       labels,
       (label) => label.entityResolutionAssessment === "correct",
@@ -1394,6 +1446,27 @@ const categoryOptions: Array<{
   { label: "Avoid combination", value: "avoid_combination" },
   { label: "Unclear", value: "unclear" },
 ];
+
+// Ordered severity scale used to compare a model's answer to the ground-truth
+// verdict (distance = how many categories apart). "unclear" is off-scale.
+const categorySeverityScale: InteractionEvaluationCategory[] = [
+  "no_known_interaction",
+  "no_action_needed",
+  "monitor_therapy",
+  "consider_therapy_modification",
+  "avoid_combination",
+];
+
+function categoryDistance(
+  a?: InteractionEvaluationCategory | null,
+  b?: InteractionEvaluationCategory | null,
+): number | null {
+  if (!a || !b) return null;
+  const ai = categorySeverityScale.indexOf(a);
+  const bi = categorySeverityScale.indexOf(b);
+  if (ai < 0 || bi < 0) return null;
+  return Math.abs(ai - bi);
+}
 
 const categoryStyles: Record<InteractionEvaluationCategory, string> = {
   avoid_combination: "border-red-200 bg-red-50 text-red-700",
