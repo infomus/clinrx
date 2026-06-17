@@ -51,6 +51,13 @@ A running summary of **your own labels** so far — they update as you go:
 ### Autosave
 There is **no Save button.** Every choice you make is saved instantly. The status line confirms it ("Saving…" / saved). You can close the tab and come back; your labels persist.
 
+### Finding your place (filter bar)
+Above the list is a filter bar so you don't have to scroll all 50 pairs:
+- **All / Ungraded / Disagreements** — show everything, only pairs you haven't finished, or only pairs where a model disagreed with your verdict. Each shows a live count.
+- **Next ungraded ↓** — jumps you to the next pair that still needs work.
+
+Tip: work in **Ungraded** and the list shrinks as you go; the page remembers nothing special — your saved labels drive all of this, so closing and reopening lands you right back where you left off.
+
 ---
 
 ## 3. Anatomy of a request card
@@ -58,8 +65,8 @@ There is **no Save button.** Every choice you make is saved instantly. The statu
 Each card is one **drug-pair request**, the way the checker would receive it.
 
 - **`#N`** — the card's number in the set.
+- **Progress badge** — `2/4 graded`, turning to a green **✓ All 4 graded** when the pair is done. Completed pairs **collapse automatically** (tap **Expand** to reopen; **Collapse** to fold one away). A pair with a model that disagrees with you gets an amber **"N disagree"** chip and a soft amber border.
 - **Sampling-reason chip** (e.g. `high risk pair`, `pubmed emerging`, `negative control`) — why this pair was included.
-- **`Expected: …`** — the category we expected, when one was pre-specified. Treat it as a hint, not the answer.
 - **The pair** — e.g. **`WARFARIN + AMIODARONE`** — the two drugs being checked.
 
 ---
@@ -93,15 +100,13 @@ Each detailed card is one model's answer under one retrieval strategy.
 
 **Header row:** model name · retrieval strategy · status (if it `failed`) · **category pill** · confidence % · latency · `Run vN`.
 
+If a model's category **disagrees with your verdict**, that card is highlighted with an amber **"Needs attention — didn't match your verdict"** banner and is sorted to the **top** of the four. These are the cards worth your time; the matches are quick.
+
 **Below the header:**
 - **Answer summary** and **Management** — the model's plain-language conclusion and what to do.
-- **Source / Target** — the resolved drug nodes (name, type like *drug*/*ingredient*, and source like *CPS*). If you ever see **"Unresolved"**, the system couldn't tie that side to a known entity — flag it under entity resolution.
-- **AI trace** — the model's reasoning:
-  - *Rationale* — why it landed on this answer.
-  - *Retrieval notes* — notes about what evidence it had.
-  - *Uncertainty* — caveats the model raised.
-  - *Error* — shown only when the run failed (e.g. malformed output).
-- **Retrieved evidence** — the chunks the system pulled, each with badges (next section).
+- **Source / Target** — the resolved drug nodes (name, type like *drug*/*ingredient*, and source like *CPS*). If you ever see **"Unresolved"**, the system couldn't tie that side to a known entity.
+- **AI reasoning** *(collapsed — tap "Show")* — rationale, retrieval notes, uncertainty, and any error.
+- **Retrieved evidence** *(collapsed — tap "Show (N)")* — the chunks the system pulled, split into **Used by the model** and **Other retrieved**, each with badges and a **source link** (next sections). On a disagreement, reasoning and evidence open automatically so you can diagnose.
 
 ---
 

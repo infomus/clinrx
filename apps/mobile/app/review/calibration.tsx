@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   Linking,
   Pressable,
@@ -114,6 +114,55 @@ function RuntimeEvaluationContent() {
     [draftsByLabelKey, ownLabelsByKey, requests],
   );
 
+  const [filterMode, setFilterMode] = useState<
+    "all" | "ungraded" | "disagreements"
+  >("all");
+  const statusByRequest = useMemo(() => {
+    const map = new Map<string, RequestGradingStatus>();
+    for (const item of requests) {
+      map.set(
+        item.request.id,
+        getRequestGradingStatus(item, draftsByLabelKey, ownLabelsByKey),
+      );
+    }
+    return map;
+  }, [requests, draftsByLabelKey, ownLabelsByKey]);
+  const indexByRequestId = useMemo(() => {
+    const map = new Map<string, number>();
+    requests.forEach((item, i) => map.set(item.request.id, i));
+    return map;
+  }, [requests]);
+  const visibleRequests = useMemo(() => {
+    if (filterMode === "ungraded") {
+      return requests.filter(
+        (item) => !statusByRequest.get(item.request.id)?.complete,
+      );
+    }
+    if (filterMode === "disagreements") {
+      return requests.filter(
+        (item) => (statusByRequest.get(item.request.id)?.mismatchCount ?? 0) > 0,
+      );
+    }
+    return requests;
+  }, [requests, statusByRequest, filterMode]);
+
+  // Scroll-to-next plumbing: record each card's y within the list container.
+  const scrollRef = useRef<ScrollView>(null);
+  const listTop = useRef(0);
+  const cardOffsets = useRef<Record<string, number>>({});
+  const jumpToNextUngraded = () => {
+    const next = requests.find(
+      (item) => !statusByRequest.get(item.request.id)?.complete,
+    );
+    const offset = next ? cardOffsets.current[next.request.id] : undefined;
+    if (offset !== undefined) {
+      scrollRef.current?.scrollTo({
+        y: Math.max(listTop.current + offset - 12, 0),
+        animated: true,
+      });
+    }
+  };
+
   useEffect(() => {
     if (selectedSetId || !sets.length) {
       return;
@@ -156,7 +205,7 @@ function RuntimeEvaluationContent() {
   };
 
   return (
-    <ScrollView className="flex-1 bg-mist">
+    <ScrollView className="flex-1 bg-mist" ref={scrollRef}>
       <View className="min-h-screen px-5 pb-10 pt-16">
         <View className="mb-7">
           <Text className="text-sm font-semibold uppercase text-leaf">
@@ -203,18 +252,61 @@ function RuntimeEvaluationContent() {
             body="Generate an interaction runtime evaluation set before starting pharmacist calibration."
           />
         ) : requests.length ? (
-          <View className="mt-5 gap-4">
-            {requests.map((item, index) => (
-              <RuntimeEvaluationCard
-                index={index}
-                item={item}
-                key={item.request.id}
-                labelsByKey={ownLabelsByKey}
-                draftsByLabelKey={draftsByLabelKey}
-                setLabel={(runId, label) => updateLabel(item, runId, label)}
-              />
-            ))}
-          </View>
+          <>
+            <ReviewFilterBar
+              filterMode={filterMode}
+              onChange={setFilterMode}
+              onJumpToNext={jumpToNextUngraded}
+              counts={{
+                all: requests.length,
+                ungraded: requests.filter(
+                  (item) => !statusByRequest.get(item.request.id)?.complete,
+                ).length,
+                disagreements: requests.filter(
+                  (item) =>
+                    (statusByRequest.get(item.request.id)?.mismatchCount ?? 0) >
+                      0,
+                ).length,
+              }}
+            />
+            <View
+              className="mt-4 gap-4"
+              onLayout={(event) => {
+                listTop.current = event.nativeEvent.layout.y;
+              }}
+            >
+              {visibleRequests.length ? (
+                visibleRequests.map((item) => (
+                  <View
+                    key={item.request.id}
+                    onLayout={(event) => {
+                      cardOffsets.current[item.request.id] =
+                        event.nativeEvent.layout.y;
+                    }}
+                  >
+                    <RuntimeEvaluationCard
+                      index={indexByRequestId.get(item.request.id) ?? 0}
+                      item={item}
+                      labelsByKey={ownLabelsByKey}
+                      draftsByLabelKey={draftsByLabelKey}
+                      setLabel={(runId, label) =>
+                        updateLabel(item, runId, label)
+                      }
+                    />
+                  </View>
+                ))
+              ) : (
+                <EmptyState
+                  title="Nothing here"
+                  body={
+                    filterMode === "ungraded"
+                      ? "Every pair is fully graded. Switch to All to review them again."
+                      : "No pairs have a model that disagrees with your verdict."
+                  }
+                />
+              )}
+            </View>
+          </>
         ) : (
           <EmptyState
             title="Empty evaluation set"
@@ -223,6 +315,71 @@ function RuntimeEvaluationContent() {
         )}
       </View>
     </ScrollView>
+  );
+}
+
+function ReviewFilterBar({
+  counts,
+  filterMode,
+  onChange,
+  onJumpToNext,
+}: {
+  counts: { all: number; ungraded: number; disagreements: number };
+  filterMode: "all" | "ungraded" | "disagreements";
+  onChange: (mode: "all" | "ungraded" | "disagreements") => void;
+  onJumpToNext: () => void;
+}) {
+  const options: Array<{
+    label: string;
+    value: "all" | "ungraded" | "disagreements";
+  }> = [
+    { label: `All (${counts.all})`, value: "all" },
+    { label: `Ungraded (${counts.ungraded})`, value: "ungraded" },
+    { label: `Disagreements (${counts.disagreements})`, value: "disagreements" },
+  ];
+
+  return (
+    <View className="mt-3 flex-row flex-wrap items-center justify-between gap-2">
+      <View className="flex-row flex-wrap gap-2">
+        {options.map((option) => {
+          const selected = filterMode === option.value;
+
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              className={`rounded-lg border px-3 py-2 ${
+                selected ? "border-leaf bg-leaf" : "border-ink/10 bg-white"
+              }`}
+              key={option.value}
+              onPress={() => onChange(option.value)}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  selected ? "text-white" : "text-ink"
+                }`}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        className="rounded-lg border border-leaf bg-white px-3 py-2"
+        disabled={counts.ungraded === 0}
+        onPress={onJumpToNext}
+      >
+        <Text
+          className={`text-sm font-semibold ${
+            counts.ungraded === 0 ? "text-ink/30" : "text-leaf"
+          }`}
+        >
+          Next ungraded ↓
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -307,10 +464,22 @@ function RuntimeEvaluationCard({
       ? toDraftLabel(labelsByKey.get(verdictKey)!)
       : createEmptyLabel(null));
 
-  // Pass 2: grade every active-matrix model x strategy answer (4 per request).
-  const runItems = [...selectActiveMatrixRunItems(item.runs)].sort(
-    compareRunItemsForPriority,
-  );
+  const verdict = verdictLabel.finalCategory ?? null;
+
+  // Pass 2: grade every active-matrix model x strategy answer (4 per request),
+  // ordered so the disagreements (the ones that need attention) come first.
+  const runItems = [...selectActiveMatrixRunItems(item.runs)]
+    .sort(compareRunItemsForPriority)
+    .sort(
+      (a, b) =>
+        Number(isCategoryMismatch(verdict, b.run.answerCategory)) -
+        Number(isCategoryMismatch(verdict, a.run.answerCategory)),
+    );
+
+  const status = getRequestGradingStatus(item, draftsByLabelKey, labelsByKey);
+  // Completed pairs collapse by default; expand to revisit. null = follow default.
+  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
+  const expanded = manualExpanded ?? !status.complete;
 
   const labelForRun = (runId: string): DraftInteractionLabel => {
     const key = getLabelKey(request.id, runId);
@@ -321,18 +490,70 @@ function RuntimeEvaluationCard({
   };
 
   return (
-    <View className="rounded-lg border border-ink/10 bg-white p-4">
-      <Text className="text-sm font-semibold uppercase text-leaf">
-        #{index + 1}
-      </Text>
+    <View
+      className={`rounded-lg bg-white p-4 ${
+        status.complete
+          ? "border border-leaf/40"
+          : status.mismatchCount > 0
+            ? "border-2 border-amber-200"
+            : "border border-ink/10"
+      }`}
+    >
+      <View className="flex-row flex-wrap items-center justify-between gap-2">
+        <Text className="text-sm font-semibold uppercase text-leaf">
+          #{index + 1}
+        </Text>
+        <View className="flex-row flex-wrap items-center gap-2">
+          <Text
+            className={`rounded-md px-2 py-1 text-xs font-semibold uppercase ${
+              status.complete
+                ? "bg-green-100 text-green-700"
+                : "bg-mist text-ink/60"
+            }`}
+          >
+            {status.complete
+              ? `✓ All ${status.total} graded`
+              : `${status.graded}/${status.total} graded`}
+          </Text>
+          {status.mismatchCount > 0 ? (
+            <Text className="rounded-md bg-amber-100 px-2 py-1 text-xs font-semibold uppercase text-amber-700">
+              {status.mismatchCount} disagree
+            </Text>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            className="rounded-md border border-ink/15 px-2 py-1"
+            onPress={() => setManualExpanded(!expanded)}
+          >
+            <Text className="text-xs font-semibold uppercase text-leaf">
+              {expanded ? "Collapse" : "Expand"}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
 
       <Text className="mt-3 text-xl font-bold text-ink">
         {request.inputSourceText} + {request.inputTargetText}
       </Text>
-      <Text className="mt-1 text-sm leading-5 text-ink/60">
-        Request ID {request.id.slice(0, 8)}
-      </Text>
+      <View className="mt-1 flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm leading-5 text-ink/60">
+          Request ID {request.id.slice(0, 8)}
+        </Text>
+        {request.samplingReason ? (
+          <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/50">
+            {formatLabel(request.samplingReason)}
+          </Text>
+        ) : null}
+        {!expanded && verdict ? (
+          <>
+            <Text className="text-xs uppercase text-ink/40">verdict</Text>
+            <CategoryPill category={verdict} />
+          </>
+        ) : null}
+      </View>
 
+      {!expanded ? null : (
+        <>
       <View className="mt-4 rounded-lg border border-leaf/40 bg-leaf/5 p-3">
         <View className="flex-row flex-wrap items-center gap-2">
           <Text className="text-sm font-semibold text-ink">
@@ -386,6 +607,8 @@ function RuntimeEvaluationCard({
         <Text className="mt-4 text-sm leading-5 text-coral">
           No runs available for the shortlisted models on this pair.
         </Text>
+      )}
+        </>
       )}
     </View>
   );
@@ -471,7 +694,25 @@ function ModelRunEvaluation({
   );
 
   return (
-    <View className="rounded-lg border border-ink/10 bg-mist p-3">
+    <View
+      className={`rounded-lg bg-mist p-3 ${
+        categoryMismatch
+          ? "border-2 border-amber-300"
+          : "border border-ink/10"
+      }`}
+    >
+      {categoryMismatch ? (
+        <View className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+          <Text className="text-xs font-semibold uppercase text-amber-700">
+            Needs attention — didn't match your verdict
+          </Text>
+          <Text className="mt-1 text-xs leading-4 text-amber-700/80">
+            This model said {formatLabel(run.answerCategory ?? "unclear")}; you
+            said {formatLabel(groundTruthCategory ?? "—")}. Flag what went wrong
+            below.
+          </Text>
+        </View>
+      ) : null}
       <View className="rounded-lg border border-ink/10 bg-white p-3">
         <View className="flex-row flex-wrap items-center gap-2">
           <Text className="text-sm font-semibold text-ink">
@@ -517,16 +758,25 @@ function ModelRunEvaluation({
         <ResolvedNode label="Target" node={run.resolvedTargetNode ?? null} />
       </View>
 
-      {run.decisionTrace ? (
-        <TracePanel trace={run.decisionTrace as Record<string, unknown>} />
+      {run.decisionTrace &&
+          traceHasContent(run.decisionTrace as Record<string, unknown>) ? (
+        <CollapsibleSection title="AI reasoning" defaultOpen={categoryMismatch}>
+          <TraceBody trace={run.decisionTrace as Record<string, unknown>} />
+        </CollapsibleSection>
       ) : null}
 
-      <EvidencePanel
-        otherEvidence={otherEvidence}
-        usedEvidence={usedEvidence}
-        sourceName={run.resolvedSourceNode?.canonicalName ?? null}
-        targetName={run.resolvedTargetNode?.canonicalName ?? null}
-      />
+      <CollapsibleSection
+        title="Retrieved evidence"
+        count={evidence.length}
+        defaultOpen={categoryMismatch}
+      >
+        <EvidenceBody
+          otherEvidence={otherEvidence}
+          usedEvidence={usedEvidence}
+          sourceName={run.resolvedSourceNode?.canonicalName ?? null}
+          targetName={run.resolvedTargetNode?.canonicalName ?? null}
+        />
+      </CollapsibleSection>
 
       <ModelVsGroundTruth
         modelName={formatModelName(run.model)}
@@ -650,7 +900,53 @@ function ResolvedNode({
   );
 }
 
-function TracePanel({ trace }: { trace: Record<string, unknown> }) {
+function CollapsibleSection({
+  children,
+  count,
+  defaultOpen,
+  title,
+}: {
+  children: ReactNode;
+  count?: number;
+  defaultOpen?: boolean;
+  title: string;
+}) {
+  const [open, setOpen] = useState(Boolean(defaultOpen));
+
+  return (
+    <View className="mt-3 rounded-lg border border-ink/10 bg-white">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        className="flex-row items-center justify-between p-3"
+        onPress={() => setOpen((prev) => !prev)}
+      >
+        <Text className="text-sm font-semibold text-ink">
+          {title}
+          {count !== undefined ? ` (${count})` : ""}
+        </Text>
+        <Text className="text-xs font-semibold uppercase text-leaf">
+          {open ? "Hide" : "Show"}
+        </Text>
+      </Pressable>
+      {open ? <View className="px-3 pb-3">{children}</View> : null}
+    </View>
+  );
+}
+
+function traceHasContent(trace: Record<string, unknown>): boolean {
+  const uncertainty = Array.isArray(trace.uncertainty)
+    ? trace.uncertainty.filter((item) => typeof item === "string")
+    : [];
+  return Boolean(
+    typeof trace.finalRationale === "string" ||
+      typeof trace.retrievalNotes === "string" ||
+      typeof trace.runtimeError === "string" ||
+      uncertainty.length,
+  );
+}
+
+function TraceBody({ trace }: { trace: Record<string, unknown> }) {
   const finalRationale =
     typeof trace.finalRationale === "string" ? trace.finalRationale : null;
   const retrievalNotes =
@@ -661,17 +957,10 @@ function TracePanel({ trace }: { trace: Record<string, unknown> }) {
     ? trace.uncertainty.filter((item): item is string => typeof item === "string")
     : [];
 
-  if (!finalRationale && !retrievalNotes && !runtimeError && !uncertainty.length) {
-    return null;
-  }
-
   return (
-    <View className="mt-3 rounded-lg border border-ink/10 bg-white p-3">
-      <Text className="text-sm font-semibold text-ink">AI trace</Text>
+    <View>
       {finalRationale ? (
-        <Text className="mt-2 text-sm leading-6 text-ink/70">
-          {finalRationale}
-        </Text>
+        <Text className="text-sm leading-6 text-ink/70">{finalRationale}</Text>
       ) : null}
       {retrievalNotes ? (
         <Text className="mt-2 text-sm leading-6 text-ink/60">
@@ -696,7 +985,7 @@ function TracePanel({ trace }: { trace: Record<string, unknown> }) {
   );
 }
 
-function EvidencePanel({
+function EvidenceBody({
   otherEvidence,
   sourceName,
   targetName,
@@ -707,16 +996,22 @@ function EvidencePanel({
   targetName: string | null;
   usedEvidence: InteractionEvaluationRequestWithRun["evidence"];
 }) {
-  const rows = [...usedEvidence, ...otherEvidence];
+  if (!usedEvidence.length && !otherEvidence.length) {
+    return (
+      <Text className="text-sm leading-5 text-coral">
+        No evidence rows were attached to this run.
+      </Text>
+    );
+  }
 
   return (
-    <View className="mt-3 rounded-lg border border-ink/10 bg-white p-3">
-      <Text className="text-sm font-semibold text-ink">
-        Retrieved evidence
-      </Text>
-      {rows.length ? (
-        <View className="mt-3 gap-3">
-          {rows.map((row) => (
+    <View className="gap-3">
+      {usedEvidence.length ? (
+        <View className="gap-2">
+          <Text className="text-xs font-semibold uppercase text-leaf">
+            Used by the model ({usedEvidence.length})
+          </Text>
+          {usedEvidence.map((row) => (
             <EvidenceRow
               evidence={row}
               key={row.id}
@@ -725,11 +1020,22 @@ function EvidencePanel({
             />
           ))}
         </View>
-      ) : (
-        <Text className="mt-2 text-sm leading-5 text-coral">
-          No evidence rows were attached to this run.
-        </Text>
-      )}
+      ) : null}
+      {otherEvidence.length ? (
+        <View className="gap-2">
+          <Text className="text-xs font-semibold uppercase text-ink/50">
+            Other retrieved ({otherEvidence.length})
+          </Text>
+          {otherEvidence.map((row) => (
+            <EvidenceRow
+              evidence={row}
+              key={row.id}
+              sourceName={sourceName}
+              targetName={targetName}
+            />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1211,6 +1517,92 @@ function EmptyState({ body, title }: { body: string; title: string }) {
   );
 }
 
+// --- Shared grading helpers (used by the screen, the cards, and metrics) ---
+
+function resolveDraftLabel(
+  requestId: string,
+  runId: string | null,
+  draftsByLabelKey: Record<string, DraftInteractionLabel>,
+  savedLabelsByKey: Map<string, InteractionEvaluationLabel>,
+): DraftInteractionLabel | null {
+  const key = getLabelKey(requestId, runId);
+  const saved = savedLabelsByKey.get(key);
+  return draftsByLabelKey[key] ?? (saved ? toDraftLabel(saved) : null);
+}
+
+function isCategoryMismatch(
+  verdict: InteractionEvaluationCategory | null | undefined,
+  answerCategory: InteractionEvaluationCategory | null | undefined,
+): boolean {
+  return Boolean(
+    verdict &&
+      verdict !== "unclear" &&
+      answerCategory &&
+      answerCategory !== verdict,
+  );
+}
+
+function labelHasRealFailure(label: DraftInteractionLabel | null): boolean {
+  return Boolean(label?.failureModes?.some((mode) => mode !== "none"));
+}
+
+function labelIsTouched(label: DraftInteractionLabel | null): boolean {
+  return Boolean(
+    (label?.failureModes && label.failureModes.length > 0) ||
+      (label?.missingContext && label.missingContext.length > 0) ||
+      (label?.notes && label.notes.trim().length > 0),
+  );
+}
+
+// A card is graded once she's recorded anything on it; but when the model's
+// category disagreed with her verdict, it isn't complete until she's named a
+// real failure mode (mirrors the required-on-mismatch rule in the form).
+function isRunGraded(
+  label: DraftInteractionLabel | null,
+  mismatch: boolean,
+): boolean {
+  return mismatch ? labelHasRealFailure(label) : labelIsTouched(label);
+}
+
+interface RequestGradingStatus {
+  graded: number;
+  total: number;
+  complete: boolean;
+  mismatchCount: number;
+  verdict: InteractionEvaluationCategory | null;
+}
+
+function getRequestGradingStatus(
+  item: InteractionEvaluationRequestWithRun,
+  draftsByLabelKey: Record<string, DraftInteractionLabel>,
+  savedLabelsByKey: Map<string, InteractionEvaluationLabel>,
+): RequestGradingStatus {
+  const verdict =
+    resolveDraftLabel(item.request.id, null, draftsByLabelKey, savedLabelsByKey)
+      ?.finalCategory ?? null;
+  const runItems = selectActiveMatrixRunItems(item.runs);
+  let graded = 0;
+  let mismatchCount = 0;
+  for (const runItem of runItems) {
+    const label = resolveDraftLabel(
+      item.request.id,
+      runItem.run.id,
+      draftsByLabelKey,
+      savedLabelsByKey,
+    );
+    const mismatch = isCategoryMismatch(verdict, runItem.run.answerCategory);
+    if (mismatch) mismatchCount += 1;
+    if (isRunGraded(label, mismatch)) graded += 1;
+  }
+  return {
+    graded,
+    total: runItems.length,
+    complete: runItems.length > 0 && graded === runItems.length,
+    mismatchCount,
+    verdict,
+  };
+}
+
 function calculateMetrics(
   items: InteractionEvaluationRequestWithRun[],
   draftsByLabelKey: Record<string, DraftInteractionLabel>,
@@ -1219,73 +1611,43 @@ function calculateMetrics(
   const runItems = items.flatMap((item) =>
     selectActiveMatrixRunItems(item.runs).map((runItem) => ({
       requestId: item.request.id,
+      verdict:
+        resolveDraftLabel(item.request.id, null, draftsByLabelKey, savedLabelsByKey)
+          ?.finalCategory ?? null,
       runItem,
     }))
   );
-  // Per-request ground-truth verdict (runId null) — the pharmacist no longer
-  // re-picks a category on each model card, so model correctness is derived by
-  // comparing the model's answer to this verdict.
-  const verdictByRequest = new Map<string, InteractionEvaluationCategory>();
-  for (const item of items) {
-    const key = getLabelKey(item.request.id, null);
-    const draft = draftsByLabelKey[key];
-    const saved = savedLabelsByKey.get(key);
-    const verdict = (draft ?? (saved ? toDraftLabel(saved) : null))?.finalCategory;
-    if (verdict) verdictByRequest.set(item.request.id, verdict);
-  }
-  const verdicts = verdictByRequest.size;
-
-  // A model card counts as reviewed once she's recorded anything on it:
-  // a failure mode (including "None"), a missing-context tag, or a note.
-  const labelFor = (requestId: string, runId: string) => {
-    const labelKey = getLabelKey(requestId, runId);
-    return draftsByLabelKey[labelKey] ??
-      (savedLabelsByKey.get(labelKey)
-        ? toDraftLabel(savedLabelsByKey.get(labelKey)!)
-        : null);
-  };
-  const isTouched = (label: DraftInteractionLabel | null) =>
+  const verdicts = items.filter((item) =>
     Boolean(
-      (label?.failureModes && label.failureModes.length > 0) ||
-        (label?.missingContext && label.missingContext.length > 0) ||
-        (label?.notes && label.notes.trim().length > 0),
-    );
-  const hasRealFailure = (label: DraftInteractionLabel | null) =>
-    Boolean(label?.failureModes?.some((mode) => mode !== "none"));
-  // A card is reviewed once she's recorded anything on it; but when the model's
-  // category disagreed with her verdict, it isn't complete until she's named a
-  // real failure mode (mirrors the required-on-mismatch rule in the form).
-  const reviewed = runItems.filter(({ requestId, runItem }) => {
-    const label = labelFor(requestId, runItem.run.id);
-    const verdict = verdictByRequest.get(requestId);
-    const mismatch = Boolean(
-      verdict &&
-        verdict !== "unclear" &&
-        runItem.run.answerCategory &&
-        runItem.run.answerCategory !== verdict,
-    );
-    return mismatch ? hasRealFailure(label) : isTouched(label);
-  }).length;
-  // Cards she flagged with at least one real failure mode (beyond "None").
-  const flagged = runItems.filter(({ requestId, runItem }) =>
-    hasRealFailure(labelFor(requestId, runItem.run.id))
+      resolveDraftLabel(item.request.id, null, draftsByLabelKey, savedLabelsByKey)
+        ?.finalCategory,
+    )
   ).length;
 
-  const categoryScorable = runItems.filter(({ requestId, runItem }) => {
-    const verdict = verdictByRequest.get(requestId);
-    return Boolean(verdict && verdict !== "unclear" && runItem.run.answerCategory);
-  });
-  const categoryAccuracyValue = categoryScorable.length
-    ? categoryScorable.filter(
-      ({ requestId, runItem }) =>
-        verdictByRequest.get(requestId) === runItem.run.answerCategory,
-    ).length / categoryScorable.length
-    : 0;
+  let reviewed = 0;
+  let flagged = 0;
+  let scorable = 0;
+  let correct = 0;
+  for (const { requestId, runItem, verdict } of runItems) {
+    const label = resolveDraftLabel(
+      requestId,
+      runItem.run.id,
+      draftsByLabelKey,
+      savedLabelsByKey,
+    );
+    const mismatch = isCategoryMismatch(verdict, runItem.run.answerCategory);
+    if (isRunGraded(label, mismatch)) reviewed += 1;
+    if (labelHasRealFailure(label)) flagged += 1;
+    if (verdict && verdict !== "unclear" && runItem.run.answerCategory) {
+      scorable += 1;
+      if (!mismatch) correct += 1;
+    }
+  }
 
   return {
     totalRequests: items.length,
     verdicts,
-    categoryAccuracy: categoryAccuracyValue,
+    categoryAccuracy: scorable ? correct / scorable : 0,
     flagged,
     reviewed,
     total: runItems.length,
