@@ -299,57 +299,28 @@ function RuntimeEvaluationCard({
   setLabel: (runId: string | null, label: DraftInteractionLabel) => void;
 }) {
   const { request } = item;
-  const [showAllRuns, setShowAllRuns] = useState(false);
-  const rawRunItems = item.runs.length
-    ? item.runs
-    : item.run
-      ? [{ evidence: item.evidence, labels: item.labels, run: item.run }]
-      : [];
-  const runItems = selectActiveMatrixRunItems(rawRunItems);
-  const prioritizedRunItems = selectPriorityRunItems(runItems);
-  const visibleRunItems = showAllRuns ? runItems : prioritizedRunItems;
 
-  // Pass-1 blind verdict: a single request-level label (runId null) holds the
-  // pharmacist's own ground-truth category. AI model answers stay hidden until
-  // this is set so the verdict is not anchored to the model consensus.
+  // Pass-1 blind verdict only: a single request-level label (runId null) holds
+  // the pharmacist's ground-truth category, formed from the drug pair and her
+  // own clinical judgment. Model answers and sampling metadata are intentionally
+  // not shown here — model review happens later on a separate shortlist pass.
   const verdictKey = getLabelKey(request.id, null);
   const verdictLabel = draftsByLabelKey[verdictKey] ??
     (labelsByKey.get(verdictKey)
       ? toDraftLabel(labelsByKey.get(verdictKey)!)
       : createEmptyLabel(null));
-  const hasVerdict = Boolean(verdictLabel.finalCategory);
 
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
-      <View className="flex-row flex-wrap items-center gap-2">
-        <Text className="text-sm font-semibold uppercase text-leaf">
-          #{index + 1}
-        </Text>
-        {/* Sampling reason and expected category reveal selection bias (e.g.
-            "high risk pair", "negative control"), so they stay hidden during the
-            blind verdict pass and appear only after the verdict is committed. */}
-        {hasVerdict ? (
-          <>
-            <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
-              {formatLabel(request.samplingReason)}
-            </Text>
-            {request.expectedCategory ? (
-              <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
-                Expected: {formatLabel(request.expectedCategory)}
-              </Text>
-            ) : null}
-          </>
-        ) : null}
-      </View>
+      <Text className="text-sm font-semibold uppercase text-leaf">
+        #{index + 1}
+      </Text>
 
       <Text className="mt-3 text-xl font-bold text-ink">
         {request.inputSourceText} + {request.inputTargetText}
       </Text>
       <Text className="mt-1 text-sm leading-5 text-ink/60">
         Request ID {request.id.slice(0, 8)}
-        {request.sourceCandidateId
-          ? ` • Source candidate ${request.sourceCandidateId.slice(0, 8)}`
-          : ""}
       </Text>
 
       <View className="mt-4 rounded-lg border border-leaf/40 bg-leaf/5 p-3">
@@ -358,8 +329,7 @@ function RuntimeEvaluationCard({
         </Text>
         <Text className="mt-1 text-xs leading-5 text-ink/60">
           Choose the correct interaction category from your own clinical
-          judgment. The AI model answers stay hidden until you choose, so your
-          verdict is unbiased. Use "Unclear" if it genuinely cannot be
+          judgment and usual references. Use "Unclear" if it genuinely cannot be
           determined.
         </Text>
         <View className="mt-3">
@@ -373,57 +343,6 @@ function RuntimeEvaluationCard({
           />
         </View>
       </View>
-
-      {!hasVerdict ? (
-        <Text className="mt-4 rounded-lg border border-ink/10 bg-mist p-3 text-sm leading-5 text-ink/60">
-          Choose your verdict above to reveal the AI model answers.
-        </Text>
-      ) : runItems.length ? (
-        <View className="mt-4 gap-4">
-          <Text className="text-xs font-semibold uppercase text-ink/50">
-            AI model answers (revealed)
-          </Text>
-          <RunMatrixPanel items={runItems} />
-          {runItems.length > prioritizedRunItems.length ? (
-            <View className="flex-row flex-wrap items-center justify-between gap-3 rounded-lg border border-ink/10 bg-white px-3 py-2">
-              <Text className="text-sm leading-5 text-ink/60">
-                Showing {visibleRunItems.length} detailed run
-                {visibleRunItems.length === 1 ? "" : "s"} of {runItems.length}.
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                className="rounded-md border border-ink/10 bg-mist px-3 py-2"
-                onPress={() => setShowAllRuns((current) => !current)}
-              >
-                <Text className="text-xs font-semibold uppercase text-ink/70">
-                  {showAllRuns ? "Show priority" : "Show all details"}
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
-          {visibleRunItems.map((runItem) => {
-            const labelKey = getLabelKey(request.id, runItem.run.id);
-            const label =
-              draftsByLabelKey[labelKey] ??
-              (labelsByKey.get(labelKey)
-                ? toDraftLabel(labelsByKey.get(labelKey)!)
-                : createEmptyLabel(runItem.run.answerCategory ?? null));
-
-            return (
-              <ModelRunEvaluation
-                item={runItem}
-                key={runItem.run.id}
-                label={label}
-                setLabel={(nextLabel) => setLabel(runItem.run.id, nextLabel)}
-              />
-            );
-          })}
-        </View>
-      ) : (
-        <Text className="mt-4 rounded-lg border border-coral/20 bg-coral/10 p-3 text-sm leading-5 text-coral">
-          This request has not been run through the checker yet.
-        </Text>
-      )}
     </View>
   );
 }
@@ -815,18 +734,13 @@ function EvidenceRow({
 function MetricsPanel({ metrics }: { metrics: RuntimeMetrics }) {
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
+      {/* Pass-1 shows verdict progress only; per-model review metrics belong to
+          the later shortlist pass. */}
       <View className="flex-row flex-wrap gap-2">
         <MetricPill
-          label="Verdicts"
+          label="Verdicts entered"
           value={`${metrics.verdicts}/${metrics.totalRequests}`}
         />
-        <MetricPill label="Reviewed" value={`${metrics.reviewed}/${metrics.total}`} />
-        <MetricPill label="Category correct" value={formatRate(metrics.categoryAccuracy)} />
-        <MetricPill label="Entities correct" value={formatRate(metrics.entityAccuracy)} />
-        <MetricPill label="Retrieval correct" value={formatRate(metrics.retrievalAccuracy)} />
-        <MetricPill label="AI understood" value={formatRate(metrics.aiAccuracy)} />
-        <MetricPill label="Safe to automate" value={metrics.safeToAutomate} />
-        <MetricPill label="Quarantine" value={metrics.quarantine} />
       </View>
     </View>
   );
