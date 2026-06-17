@@ -352,9 +352,12 @@ async function getComparableRunsByRequestId(
 }
 
 function getRunComparisonKey(row: InteractionEvaluationRunRow): string {
+  // Keyed on model + retrieval strategy only (not prompt_version) so each matrix
+  // cell shows the single latest run for that model/strategy. Including
+  // prompt_version would surface superseded prompt revisions (e.g. v3 alongside
+  // v4) as duplicate answers in the reviewer matrix.
   return [
     row.model ?? "unknown-model",
-    row.prompt_version ?? "no-prompt",
     row.retrieval_strategy_version,
   ].join(":");
 }
