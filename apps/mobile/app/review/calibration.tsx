@@ -327,13 +327,20 @@ function RuntimeEvaluationCard({
         <Text className="text-sm font-semibold uppercase text-leaf">
           #{index + 1}
         </Text>
-        <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
-          {formatLabel(request.samplingReason)}
-        </Text>
-        {request.expectedCategory ? (
-          <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
-            Expected: {formatLabel(request.expectedCategory)}
-          </Text>
+        {/* Sampling reason and expected category reveal selection bias (e.g.
+            "high risk pair", "negative control"), so they stay hidden during the
+            blind verdict pass and appear only after the verdict is committed. */}
+        {hasVerdict ? (
+          <>
+            <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+              {formatLabel(request.samplingReason)}
+            </Text>
+            {request.expectedCategory ? (
+              <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+                Expected: {formatLabel(request.expectedCategory)}
+              </Text>
+            ) : null}
+          </>
         ) : null}
       </View>
 
