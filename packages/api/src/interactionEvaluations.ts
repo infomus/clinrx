@@ -420,23 +420,46 @@ async function getEvidenceByRunId(
     return evidenceByRunId;
   }
 
-  const { data, error } = await client
-    .from("interaction_evaluation_evidence")
-    .select("*")
-    .in("run_id", runIds)
-    .order("rank", { ascending: true });
+  // Batch the run_id filter: a single in.(...) over every run in a fully
+  // populated set (~1000 runs) produces a URL long enough that PostgREST/the
+  // gateway rejects it with 400. Chunk to keep each request small.
+  const pages = await Promise.all(
+    chunkArray([...new Set(runIds)], EVALUATION_IN_FILTER_CHUNK_SIZE).map(
+      async (chunk) => {
+        const { data, error } = await client
+          .from("interaction_evaluation_evidence")
+          .select("*")
+          .in("run_id", chunk)
+          .order("rank", { ascending: true });
 
-  if (error) {
-    throw error;
-  }
+        if (error) {
+          throw error;
+        }
 
-  for (const row of (data ?? []) as InteractionEvaluationEvidenceRow[]) {
+        return (data ?? []) as InteractionEvaluationEvidenceRow[];
+      },
+    ),
+  );
+
+  for (const row of pages.flat()) {
     const evidence = evidenceByRunId.get(row.run_id) ?? [];
     evidence.push(mapInteractionEvaluationEvidenceRow(row));
     evidenceByRunId.set(row.run_id, evidence);
   }
 
   return evidenceByRunId;
+}
+
+const EVALUATION_IN_FILTER_CHUNK_SIZE = 100;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
 }
 
 async function getKgNodesById(
@@ -450,16 +473,26 @@ async function getKgNodesById(
     return nodesById;
   }
 
-  const { data, error } = await client
-    .from("kg_node")
-    .select("id,type,canonical_name,identifiers,uncertainty,summary,source,created_at")
-    .in("id", uniqueNodeIds);
+  const pages = await Promise.all(
+    chunkArray(uniqueNodeIds, EVALUATION_IN_FILTER_CHUNK_SIZE).map(
+      async (chunk) => {
+        const { data, error } = await client
+          .from("kg_node")
+          .select(
+            "id,type,canonical_name,identifiers,uncertainty,summary,source,created_at",
+          )
+          .in("id", chunk);
 
-  if (error) {
-    throw error;
-  }
+        if (error) {
+          throw error;
+        }
 
-  for (const row of (data ?? []) as KgNodeRow[]) {
+        return (data ?? []) as KgNodeRow[];
+      },
+    ),
+  );
+
+  for (const row of pages.flat()) {
     nodesById.set(row.id, {
       canonicalName: row.canonical_name,
       createdAt: row.created_at,
