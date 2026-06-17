@@ -21,19 +21,29 @@ const setId = process.env.INTERACTION_EVALUATION_SET_ID ??
   "interaction-runtime-kg-node-calibration-2026-06-14";
 const reviewerKey = process.env.INTERACTION_REVIEWER_KEY ?? "shared-password-reviewer";
 
-const MODELS = [
-  "claude-opus-4-8",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "gpt-5.5",
-  "gpt-5.4-mini",
-];
-const STRATEGIES = [
-  "monograph_direct_top8",
-  "monograph_direct_plus_pubmed_top10",
-  "monograph_plus_safety_top12",
-  "ingredient_product_class_guarded_top12",
-];
+// Pass 2 shortlist: 2 models x 2 retrieval strategies (200 cells across 50
+// requests). Set INTERACTION_FULL_MATRIX=1 to score the full 5x4 matrix.
+const FULL_MATRIX = process.env.INTERACTION_FULL_MATRIX === "1";
+const MODELS = FULL_MATRIX
+  ? [
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "gpt-5.5",
+    "gpt-5.4-mini",
+  ]
+  : ["claude-sonnet-4-6", "gpt-5.4-mini"];
+const STRATEGIES = FULL_MATRIX
+  ? [
+    "monograph_direct_top8",
+    "monograph_direct_plus_pubmed_top10",
+    "monograph_plus_safety_top12",
+    "ingredient_product_class_guarded_top12",
+  ]
+  : [
+    "monograph_direct_plus_pubmed_top10",
+    "ingredient_product_class_guarded_top12",
+  ];
 // ordered category scale for distance scoring
 const SCALE = [
   "no_known_interaction",
@@ -232,7 +242,7 @@ async function main() {
   const { modelHits, fullAgreeCells, totalCells } = consensusPreview(latest, requestIds);
   console.log("\n=== Inter-model consensus PREVIEW (not ground truth) ===");
   console.log(
-    `  All 5 models agree on the category in ${fullAgreeCells}/${totalCells} ` +
+    `  All ${MODELS.length} models agree on the category in ${fullAgreeCells}/${totalCells} ` +
       `request×strategy cells (${pct(fullAgreeCells, totalCells)}).`,
   );
   console.log("  How often each model matches the cross-model majority:");

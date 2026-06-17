@@ -41,17 +41,15 @@ type DraftInteractionLabel = Omit<
 type RuntimeRunItem = InteractionEvaluationRequestWithRun["runs"][number];
 
 const reviewerKey = "shared-password-reviewer";
+// Pass 2 shortlist: 2 models x 2 retrieval strategies = 4 graded answers per
+// request (200 across the 50-request set). Narrowed from the full 5x4 matrix
+// after pass-1 verdicts and the calibration findings.
 const activeMatrixModels = new Set([
-  "claude-opus-4-8",
   "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "gpt-5.5",
   "gpt-5.4-mini",
 ]);
 const activeMatrixRetrievalStrategies = new Set([
-  "monograph_direct_top8",
   "monograph_direct_plus_pubmed_top10",
-  "monograph_plus_safety_top12",
   "ingredient_product_class_guarded_top12",
 ]);
 
@@ -300,15 +298,27 @@ function RuntimeEvaluationCard({
 }) {
   const { request } = item;
 
-  // Pass-1 blind verdict only: a single request-level label (runId null) holds
-  // the pharmacist's ground-truth category, formed from the drug pair and her
-  // own clinical judgment. Model answers and sampling metadata are intentionally
-  // not shown here — model review happens later on a separate shortlist pass.
+  // Request-level ground-truth verdict (runId null) carried over from pass 1.
+  // It anchors the per-model grading below: judge each model answer against
+  // your own clinical call, not against the other models.
   const verdictKey = getLabelKey(request.id, null);
   const verdictLabel = draftsByLabelKey[verdictKey] ??
     (labelsByKey.get(verdictKey)
       ? toDraftLabel(labelsByKey.get(verdictKey)!)
       : createEmptyLabel(null));
+
+  // Pass 2: grade every active-matrix model x strategy answer (4 per request).
+  const runItems = [...selectActiveMatrixRunItems(item.runs)].sort(
+    compareRunItemsForPriority,
+  );
+
+  const labelForRun = (runId: string): DraftInteractionLabel => {
+    const key = getLabelKey(request.id, runId);
+    return draftsByLabelKey[key] ??
+      (labelsByKey.get(key)
+        ? toDraftLabel(labelsByKey.get(key)!)
+        : createEmptyLabel(null));
+  };
 
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
@@ -324,13 +334,22 @@ function RuntimeEvaluationCard({
       </Text>
 
       <View className="mt-4 rounded-lg border border-leaf/40 bg-leaf/5 p-3">
-        <Text className="text-sm font-semibold text-ink">
-          Your verdict (ground truth)
-        </Text>
+        <View className="flex-row flex-wrap items-center gap-2">
+          <Text className="text-sm font-semibold text-ink">
+            Your verdict (ground truth)
+          </Text>
+          {verdictLabel.finalCategory ? (
+            <CategoryPill category={verdictLabel.finalCategory} />
+          ) : (
+            <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/50">
+              Not set
+            </Text>
+          )}
+        </View>
         <Text className="mt-1 text-xs leading-5 text-ink/60">
-          Choose the correct interaction category from your own clinical
-          judgment and usual references. Use "Unclear" if it genuinely cannot be
-          determined.
+          Your own clinical call for this pair. It anchors the grading below —
+          judge each model against this, not against the other models. Adjust it
+          here if you've changed your mind.
         </Text>
         <View className="mt-3">
           <SegmentedControl
@@ -343,6 +362,31 @@ function RuntimeEvaluationCard({
           />
         </View>
       </View>
+
+      <View className="mt-4">
+        <RunMatrixPanel items={runItems} />
+      </View>
+
+      {runItems.length ? (
+        <View className="mt-4 gap-4">
+          <Text className="text-sm font-semibold text-ink">
+            Grade each model answer ({runItems.length})
+          </Text>
+          {runItems.map((runItem) => (
+            <ModelRunEvaluation
+              key={runItem.run.id}
+              item={runItem}
+              groundTruthCategory={verdictLabel.finalCategory ?? null}
+              label={labelForRun(runItem.run.id)}
+              setLabel={(label) => setLabel(runItem.run.id, label)}
+            />
+          ))}
+        </View>
+      ) : (
+        <Text className="mt-4 text-sm leading-5 text-coral">
+          No runs available for the shortlisted models on this pair.
+        </Text>
+      )}
     </View>
   );
 }
@@ -400,10 +444,12 @@ function RunMatrixChip({ run }: { run: RuntimeRunItem["run"] }) {
 }
 
 function ModelRunEvaluation({
+  groundTruthCategory,
   item,
   label,
   setLabel,
 }: {
+  groundTruthCategory?: InteractionEvaluationCategory | null;
   item: InteractionEvaluationRequestWithRun["runs"][number];
   label: DraftInteractionLabel;
   setLabel: (label: DraftInteractionLabel) => void;
@@ -473,6 +519,18 @@ function ModelRunEvaluation({
       />
 
       <View className="mt-4 gap-3 rounded-lg border border-ink/10 bg-white p-3">
+        <View className="flex-row flex-wrap items-center gap-2 rounded-lg border border-leaf/30 bg-leaf/5 px-3 py-2">
+          <Text className="text-xs font-semibold uppercase text-ink/60">
+            Your ground truth
+          </Text>
+          {groundTruthCategory ? (
+            <CategoryPill category={groundTruthCategory} />
+          ) : (
+            <Text className="text-xs font-semibold uppercase text-coral">
+              not set — choose your verdict above
+            </Text>
+          )}
+        </View>
         <SegmentedControl
           label={`Final interaction category for ${formatModelName(run.model)}`}
           options={categoryOptions}
@@ -734,13 +792,25 @@ function EvidenceRow({
 function MetricsPanel({ metrics }: { metrics: RuntimeMetrics }) {
   return (
     <View className="rounded-lg border border-ink/10 bg-white p-4">
-      {/* Pass-1 shows verdict progress only; per-model review metrics belong to
-          the later shortlist pass. */}
+      {/* Pass 2: per-model grading across the 2x2 shortlist (4 answers/request). */}
       <View className="flex-row flex-wrap gap-2">
         <MetricPill
           label="Verdicts entered"
           value={`${metrics.verdicts}/${metrics.totalRequests}`}
         />
+        <MetricPill
+          label="Model reviews"
+          value={`${metrics.reviewed}/${metrics.total}`}
+        />
+        <MetricPill
+          label="Category correct"
+          value={formatRate(metrics.categoryAccuracy)}
+        />
+        <MetricPill
+          label="Safe to automate"
+          value={metrics.safeToAutomate}
+        />
+        <MetricPill label="Quarantine" value={metrics.quarantine} />
       </View>
     </View>
   );
