@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -81,7 +81,34 @@ export default function KgExplorerScreen() {
 function KgExplorerContent() {
   const [query, setQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // Ego-center navigation history (browser-style back/forward).
+  const [nav, setNav] = useState<{ stack: string[]; index: number }>({
+    stack: [],
+    index: -1,
+  });
+  const selectedNodeId = nav.index >= 0 ? nav.stack[nav.index] : null;
+  const navigateToNode = useCallback((id: string) => {
+    setNav((n) => {
+      const current = n.index >= 0 ? n.stack[n.index] : null;
+      if (id === current) return n;
+      const stack = n.stack.slice(0, n.index + 1);
+      stack.push(id);
+      return { stack, index: stack.length - 1 };
+    });
+  }, []);
+  const goBack = useCallback(
+    () => setNav((n) => (n.index > 0 ? { ...n, index: n.index - 1 } : n)),
+    [],
+  );
+  const goForward = useCallback(
+    () =>
+      setNav((n) =>
+        n.index < n.stack.length - 1 ? { ...n, index: n.index + 1 } : n
+      ),
+    [],
+  );
+  const canGoBack = nav.index > 0;
+  const canGoForward = nav.index < nav.stack.length - 1;
   const [searchView, setSearchView] = useState<"grouped" | "nodes">("grouped");
   const [showOverview, setShowOverview] = useState(false);
 
@@ -277,7 +304,7 @@ function KgExplorerContent() {
                   <MoietyGroupCard
                     group={group}
                     key={group.moiety || "unnamed"}
-                    onSelectNode={setSelectedNodeId}
+                    onSelectNode={navigateToNode}
                     selectedNodeId={selectedNodeId}
                   />
                 ))}
@@ -300,7 +327,7 @@ function KgExplorerContent() {
                         : "border-ink/10 bg-white"
                     }`}
                     key={result.id}
-                    onPress={() => setSelectedNodeId(result.id)}
+                    onPress={() => navigateToNode(result.id)}
                   >
                     <View className="flex-row flex-wrap items-center gap-2">
                       <Text className="text-base font-semibold text-ink">
@@ -318,6 +345,42 @@ function KgExplorerContent() {
             <Text className="mt-3 text-sm text-ink/60">No matches.</Text>
           )}
         </View>
+
+        {nav.stack.length > 0 ? (
+          <View className="mt-4 flex-row flex-wrap items-center gap-2">
+            <Pressable
+              accessibilityRole="button"
+              className="rounded-md border border-ink/15 px-3 py-2"
+              disabled={!canGoBack}
+              onPress={goBack}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  canGoBack ? "text-leaf" : "text-ink/30"
+                }`}
+              >
+                ← Back
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              className="rounded-md border border-ink/15 px-3 py-2"
+              disabled={!canGoForward}
+              onPress={goForward}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  canGoForward ? "text-leaf" : "text-ink/30"
+                }`}
+              >
+                Forward →
+              </Text>
+            </Pressable>
+            <Text className="text-xs text-ink/50">
+              {nav.index + 1} of {nav.stack.length} visited
+            </Text>
+          </View>
+        ) : null}
 
         {!selectedNodeId ? (
           <Text className="mt-6 text-sm text-ink/50">
@@ -449,7 +512,7 @@ function KgExplorerContent() {
                   <KgGraphCanvas
                     center={{ id: node.id, name: node.canonicalName, type: node.type }}
                     edges={edgePage.edges}
-                    onSelectNode={setSelectedNodeId}
+                    onSelectNode={navigateToNode}
                   />
                 </View>
               ) : (
@@ -464,7 +527,7 @@ function KgExplorerContent() {
                           {edge.direction === "out" ? "→" : "←"}
                         </Text>
                         <Pressable
-                          onPress={() => setSelectedNodeId(edge.neighborId)}
+                          onPress={() => navigateToNode(edge.neighborId)}
                         >
                           <Text className="text-base font-semibold text-leaf underline">
                             {edge.neighborName}
