@@ -1063,17 +1063,18 @@ function EvidenceRow({
   const pmid = getMetadataString(evidence.metadata, "pmid");
   const pmcid = getMetadataString(evidence.metadata, "pmcid");
   const sourceUrl = getMetadataString(evidence.metadata, "sourceUrl");
+  const sourceLabel = getMetadataString(evidence.metadata, "sourceLabel");
   const side = getMetadataString(evidence.metadata, "side");
   const isMonograph = evidence.sourceKind === "cps_monograph" ||
     evidence.sourceKind === "health_canada_product_monograph";
-  // Monographs aren't URL-addressable in our index, so offer a name-scoped
-  // search the pharmacist can use to pull the real monograph and cross-check.
+  // Monographs carry a direct sourceUrl (CPS / Health Canada) when we resolved
+  // one; fall back to a name-scoped search only when no direct URL exists.
   const monographName = side === "source"
     ? sourceName
     : side === "target"
       ? targetName
       : (sourceName ?? targetName);
-  const monographSearchUrl = isMonograph && monographName
+  const monographSearchUrl = isMonograph && !sourceUrl && monographName
     ? `https://www.google.com/search?q=${
       encodeURIComponent(`${monographName} product monograph drug interactions`)
     }`
@@ -1116,7 +1117,9 @@ function EvidenceRow({
             url={`https://www.ncbi.nlm.nih.gov/pmc/articles/${pmcid}/`}
           />
         ) : null}
-        {sourceUrl ? <EvidenceLink label="Open source" url={sourceUrl} /> : null}
+        {sourceUrl ? (
+          <EvidenceLink label={sourceLabel ?? "Open source"} url={sourceUrl} />
+        ) : null}
         {monographSearchUrl ? (
           <EvidenceLink label="Find monograph" url={monographSearchUrl} />
         ) : null}

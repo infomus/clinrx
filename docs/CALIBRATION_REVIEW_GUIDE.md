@@ -148,8 +148,8 @@ Each retrieved-evidence row carries up to three badges.
 
 Each row also shows the quote/excerpt and a **link to the source** so you can open it and cross-check that the extraction is faithful:
 - **PubMed** chunks → **Open PubMed** (the record) and **Open full text (PMC)** when an open-access full text exists.
-- Chunks with a stored URL → **Open source**.
-- **Monographs** (CPS / Health Canada) aren't directly URL-addressable in our index, so you get **Find monograph** — a name-scoped web search to pull the real product monograph and compare.
+- **CPS monographs** → **Open CPS monograph** (opens the monograph on cps2.pharmacists.ca — you'll need to be signed in to CPS).
+- **Health Canada monographs** → **Open Health Canada listing** (the DPD product page, which links to the product monograph PDF).
 - **Published interactions** (`kg_edge`) are internal references, so they show no external link.
 
 ### What the badge *combinations* tell you
