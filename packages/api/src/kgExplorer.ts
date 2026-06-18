@@ -139,6 +139,104 @@ export async function getKgExplorerNode(
   };
 }
 
+export interface KgMoietyMember {
+  id: string;
+  name: string;
+  type: KgNodeType;
+  source: string;
+  degree: number;
+}
+
+export interface KgMoietyGroup {
+  moiety: string;
+  total: number;
+  nIngredient: number;
+  nClass: number;
+  nProduct: number;
+  nSources: number;
+  sources: string[];
+  totalDegree: number;
+  members: KgMoietyMember[];
+}
+
+export interface KgDuplicationOverview {
+  summary: {
+    spineNodes: number;
+    moieties: number;
+    duplicateMoieties: number;
+    eliminableNodes: number;
+  };
+  top: Array<{
+    moiety: string;
+    total: number;
+    nIngredient: number;
+    nClass: number;
+    nSources: number;
+    sources: string[];
+  }>;
+}
+
+export async function searchKgGroupedNodes(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  query: string,
+  limit = 40,
+): Promise<KgMoietyGroup[]> {
+  const { data, error } = await client.rpc("kg_explorer_search_grouped", {
+    p_passcode: passcode,
+    p_query: query,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  return ((data as Record<string, unknown>[] | null) ?? []).map((row) => ({
+    moiety: (row.moiety as string) ?? "",
+    total: Number(row.total ?? 0),
+    nIngredient: Number(row.n_ingredient ?? 0),
+    nClass: Number(row.n_class ?? 0),
+    nProduct: Number(row.n_product ?? 0),
+    nSources: Number(row.n_sources ?? 0),
+    sources: (row.sources as string[] | null) ?? [],
+    totalDegree: Number(row.total_degree ?? 0),
+    members: ((row.members as Record<string, unknown>[] | null) ?? []).map((m) => ({
+      id: m.id as string,
+      name: m.name as string,
+      type: m.type as KgNodeType,
+      source: m.source as string,
+      degree: Number(m.degree ?? 0),
+    })),
+  }));
+}
+
+export async function getKgDuplicationOverview(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  limit = 100,
+): Promise<KgDuplicationOverview> {
+  const { data, error } = await client.rpc("kg_explorer_duplication", {
+    p_passcode: passcode,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  const row = (data as Record<string, unknown> | null) ?? {};
+  const summary = (row.summary as Record<string, unknown>) ?? {};
+  return {
+    summary: {
+      spineNodes: Number(summary.spine_nodes ?? 0),
+      moieties: Number(summary.moieties ?? 0),
+      duplicateMoieties: Number(summary.duplicate_moieties ?? 0),
+      eliminableNodes: Number(summary.eliminable_nodes ?? 0),
+    },
+    top: ((row.top as Record<string, unknown>[] | null) ?? []).map((t) => ({
+      moiety: (t.moiety as string) ?? "",
+      total: Number(t.total ?? 0),
+      nIngredient: Number(t.n_ingredient ?? 0),
+      nClass: Number(t.n_class ?? 0),
+      nSources: Number(t.n_sources ?? 0),
+      sources: (t.sources as string[] | null) ?? [],
+    })),
+  };
+}
+
 export async function getKgExplorerEdges(
   client: ClinRxSupabaseClient,
   passcode: string,

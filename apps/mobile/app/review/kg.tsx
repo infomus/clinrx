@@ -10,9 +10,12 @@ import {
 } from "react-native";
 
 import {
+  getKgDuplicationOverview,
   getKgExplorerNode,
   getKgExplorerEdges,
+  type KgMoietyGroup,
   searchKgExplorerNodes,
+  searchKgGroupedNodes,
 } from "@clinrx/api";
 import type {
   EdgeReviewStatus,
@@ -79,6 +82,8 @@ function KgExplorerContent() {
   const [query, setQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [searchView, setSearchView] = useState<"grouped" | "nodes">("grouped");
+  const [showOverview, setShowOverview] = useState(false);
 
   // Edge filters.
   const [relation, setRelation] = useState<KgRelation | null>(null);
@@ -100,9 +105,19 @@ function KgExplorerContent() {
   }, [selectedNodeId, relation, statuses, severities, neighborQuery]);
 
   const searchQuery = useQuery({
-    enabled: searchTerm.length >= 2,
+    enabled: searchTerm.length >= 2 && searchView === "nodes",
     queryKey: ["kg-search", searchTerm],
     queryFn: () => searchKgExplorerNodes(supabase, reviewPassword, searchTerm, 25),
+  });
+  const groupedQuery = useQuery({
+    enabled: searchTerm.length >= 2 && searchView === "grouped",
+    queryKey: ["kg-search-grouped", searchTerm],
+    queryFn: () => searchKgGroupedNodes(supabase, reviewPassword, searchTerm, 60),
+  });
+  const overviewQuery = useQuery({
+    enabled: showOverview,
+    queryKey: ["kg-duplication-overview"],
+    queryFn: () => getKgDuplicationOverview(supabase, reviewPassword, 60),
   });
 
   const nodeQuery = useQuery({
@@ -156,9 +171,96 @@ function KgExplorerContent() {
           low-confidence edges as the graph grows.
         </Text>
 
-        {/* Search */}
+        {/* Graph-health: duplication overview */}
         <View className="mt-6 rounded-lg border border-ink/10 bg-white p-4">
-          <Text className="text-sm font-semibold text-ink">Search nodes</Text>
+          <View className="flex-row flex-wrap items-center justify-between gap-2">
+            <Text className="text-sm font-semibold text-ink">
+              Graph health — node duplication
+            </Text>
+            <Pressable
+              className="rounded-md border border-ink/15 px-2 py-1"
+              onPress={() => setShowOverview((v) => !v)}
+            >
+              <Text className="text-xs font-semibold uppercase text-leaf">
+                {showOverview ? "Hide" : "Show"}
+              </Text>
+            </Pressable>
+          </View>
+          {showOverview ? (
+            overviewQuery.isLoading ? (
+              <ActivityIndicator className="mt-3" />
+            ) : overviewQuery.data ? (
+              <View className="mt-3">
+                <View className="flex-row flex-wrap gap-2">
+                  <Stat
+                    label="Spine nodes"
+                    value={overviewQuery.data.summary.spineNodes}
+                  />
+                  <Stat
+                    label="Real moieties"
+                    value={overviewQuery.data.summary.moieties}
+                  />
+                  <Stat
+                    label="Duplicated moieties"
+                    value={overviewQuery.data.summary.duplicateMoieties}
+                  />
+                  <Stat
+                    label="Eliminable nodes"
+                    value={overviewQuery.data.summary.eliminableNodes}
+                  />
+                </View>
+                <Text className="mt-3 text-xs font-semibold uppercase text-ink/50">
+                  Most-duplicated moieties (ingredient + class). Tap to inspect.
+                </Text>
+                <View className="mt-2 gap-1">
+                  {overviewQuery.data.top.map((t) => (
+                    <Pressable
+                      className="flex-row flex-wrap items-center gap-2 rounded-lg border border-ink/10 bg-mist px-3 py-2"
+                      key={t.moiety}
+                      onPress={() => {
+                        setSearchView("grouped");
+                        setQuery(t.moiety);
+                      }}
+                    >
+                      <Text className="text-sm font-semibold text-ink">
+                        {t.moiety}
+                      </Text>
+                      <Text className="rounded-md bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                        ×{t.total}
+                      </Text>
+                      <Tag>{t.nIngredient} ing</Tag>
+                      {t.nClass ? <Tag>{t.nClass} class</Tag> : null}
+                      <Tag>{t.nSources} sources</Tag>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ) : null
+          ) : (
+            <Text className="mt-2 text-xs leading-5 text-ink/60">
+              How fragmented the interaction-bearing spine is right now — the
+              same drug split into many per-source nodes.
+            </Text>
+          )}
+        </View>
+
+        {/* Search */}
+        <View className="mt-4 rounded-lg border border-ink/10 bg-white p-4">
+          <View className="flex-row flex-wrap items-center justify-between gap-2">
+            <Text className="text-sm font-semibold text-ink">Search nodes</Text>
+            <View className="flex-row gap-1">
+              <Chip
+                active={searchView === "grouped"}
+                onPress={() => setSearchView("grouped")}
+                text="Grouped by moiety"
+              />
+              <Chip
+                active={searchView === "nodes"}
+                onPress={() => setSearchView("nodes")}
+                text="All nodes"
+              />
+            </View>
+          </View>
           <TextInput
             className="mt-2 rounded-lg border border-ink/15 bg-white px-3 py-3 text-base text-ink"
             onChangeText={setQuery}
@@ -166,40 +268,55 @@ function KgExplorerContent() {
             placeholderTextColor="#7b8580"
             value={query}
           />
-          {searchTerm.length >= 2 ? (
-            searchQuery.isLoading ? (
+          {searchTerm.length < 2 ? null : searchView === "grouped" ? (
+            groupedQuery.isLoading ? (
               <ActivityIndicator className="mt-3" />
-            ) : searchQuery.data?.length ? (
+            ) : groupedQuery.data?.length ? (
               <View className="mt-3 gap-2">
-                {searchQuery.data.map((result) => {
-                  const selected = result.id === selectedNodeId;
-                  return (
-                    <Pressable
-                      accessibilityRole="button"
-                      className={`rounded-lg border px-3 py-2 ${
-                        selected
-                          ? "border-leaf bg-leaf/10"
-                          : "border-ink/10 bg-white"
-                      }`}
-                      key={result.id}
-                      onPress={() => setSelectedNodeId(result.id)}
-                    >
-                      <View className="flex-row flex-wrap items-center gap-2">
-                        <Text className="text-base font-semibold text-ink">
-                          {result.canonicalName}
-                        </Text>
-                        <Tag>{label(result.type)}</Tag>
-                        <Tag>{result.source}</Tag>
-                        <Tag>{result.degree} edges</Tag>
-                      </View>
-                    </Pressable>
-                  );
-                })}
+                {groupedQuery.data.map((group) => (
+                  <MoietyGroupCard
+                    group={group}
+                    key={group.moiety || "unnamed"}
+                    onSelectNode={setSelectedNodeId}
+                    selectedNodeId={selectedNodeId}
+                  />
+                ))}
               </View>
             ) : (
               <Text className="mt-3 text-sm text-ink/60">No matches.</Text>
             )
-          ) : null}
+          ) : searchQuery.isLoading ? (
+            <ActivityIndicator className="mt-3" />
+          ) : searchQuery.data?.length ? (
+            <View className="mt-3 gap-2">
+              {searchQuery.data.map((result) => {
+                const selected = result.id === selectedNodeId;
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    className={`rounded-lg border px-3 py-2 ${
+                      selected
+                        ? "border-leaf bg-leaf/10"
+                        : "border-ink/10 bg-white"
+                    }`}
+                    key={result.id}
+                    onPress={() => setSelectedNodeId(result.id)}
+                  >
+                    <View className="flex-row flex-wrap items-center gap-2">
+                      <Text className="text-base font-semibold text-ink">
+                        {result.canonicalName}
+                      </Text>
+                      <Tag>{label(result.type)}</Tag>
+                      <Tag>{result.source}</Tag>
+                      <Tag>{result.degree} edges</Tag>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : (
+            <Text className="mt-3 text-sm text-ink/60">No matches.</Text>
+          )}
         </View>
 
         {!selectedNodeId ? (
@@ -509,6 +626,83 @@ function Chip({
         {text}
       </Text>
     </Pressable>
+  );
+}
+
+function Stat({ label: statLabel, value }: { label: string; value: number }) {
+  return (
+    <View className="rounded-lg border border-ink/10 bg-mist px-3 py-2">
+      <Text className="text-xs font-semibold uppercase text-ink/50">
+        {statLabel}
+      </Text>
+      <Text className="mt-1 text-lg font-bold text-ink">
+        {value.toLocaleString()}
+      </Text>
+    </View>
+  );
+}
+
+function MoietyGroupCard({
+  group,
+  onSelectNode,
+  selectedNodeId,
+}: {
+  group: KgMoietyGroup;
+  onSelectNode: (id: string) => void;
+  selectedNodeId: string | null;
+}) {
+  const [open, setOpen] = useState(group.total <= 4);
+
+  return (
+    <View className="rounded-lg border border-ink/10 bg-white p-3">
+      <Pressable
+        accessibilityRole="button"
+        className="flex-row flex-wrap items-center gap-2"
+        onPress={() => setOpen((o) => !o)}
+      >
+        <Text className="text-base font-semibold text-ink">
+          {group.moiety || "(unnamed)"}
+        </Text>
+        <Text
+          className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+            group.total > 1
+              ? "bg-amber-100 text-amber-700"
+              : "bg-mist text-ink/60"
+          }`}
+        >
+          {group.total} nodes
+        </Text>
+        {group.nIngredient ? <Tag>{group.nIngredient} ing</Tag> : null}
+        {group.nClass ? <Tag>{group.nClass} class</Tag> : null}
+        {group.nProduct ? <Tag>{group.nProduct} product</Tag> : null}
+        <Tag>{group.nSources} sources</Tag>
+        <Text className="text-xs font-semibold uppercase text-leaf">
+          {open ? "Hide" : "Show"}
+        </Text>
+      </Pressable>
+      {open ? (
+        <View className="mt-2 gap-1">
+          {group.members.map((m) => {
+            const selected = m.id === selectedNodeId;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                className={`flex-row flex-wrap items-center gap-2 rounded-md border px-2 py-1.5 ${
+                  selected ? "border-leaf bg-leaf/10" : "border-ink/10 bg-mist"
+                }`}
+                key={m.id}
+                onPress={() => onSelectNode(m.id)}
+              >
+                <Text className="text-sm text-ink">{m.name}</Text>
+                <Tag>{label(m.type)}</Tag>
+                <Tag>{m.source}</Tag>
+                <Tag>{m.degree} edges</Tag>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
