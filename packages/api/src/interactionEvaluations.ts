@@ -321,18 +321,33 @@ async function getComparableRunsByRequestId(
     return runsByRequestId;
   }
 
-  const { data, error } = await client
-    .from("interaction_evaluation_run")
-    .select("*")
-    .in("request_id", requestIds)
-    .order("run_version", { ascending: false })
-    .order("created_at", { ascending: false });
+  // Paginate past PostgREST's 1000-row response cap: a calibration set can have
+  // thousands of run rows (many run_versions per matrix cell), and truncating
+  // at 1000 silently drops latest runs for some cells (e.g. matrix shows 181/200).
+  const pageSize = 1000;
+  const rows: InteractionEvaluationRunRow[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await client
+      .from("interaction_evaluation_run")
+      .select("*")
+      .in("request_id", requestIds)
+      .order("run_version", { ascending: false })
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(offset, offset + pageSize - 1);
 
-  if (error) {
-    throw error;
+    if (error) {
+      throw error;
+    }
+
+    const page = (data ?? []) as InteractionEvaluationRunRow[];
+    rows.push(...page);
+    if (page.length < pageSize) {
+      break;
+    }
   }
 
-  for (const row of (data ?? []) as InteractionEvaluationRunRow[]) {
+  for (const row of rows) {
     const seenKeys = seenKeysByRequestId.get(row.request_id) ?? new Set<string>();
     const modelKey = getRunComparisonKey(row);
 
