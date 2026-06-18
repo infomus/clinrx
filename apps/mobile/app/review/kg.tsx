@@ -73,6 +73,87 @@ function label(value: string | null | undefined): string {
   return (value ?? "—").replace(/_/g, " ");
 }
 
+const chunkKindLabel: Record<string, string> = {
+  CPS: "CPS",
+  HEALTH_CANADA_PRODUCT_MONOGRAPH: "HC monograph",
+  HEALTH_CANADA_DPD: "DPD",
+  HEALTH_CANADA_NOC: "NOC",
+  HEALTH_CANADA_SUMMARY_REPORT: "HC summary",
+  pubmed: "PubMed",
+};
+const chunkKindStyle: Record<string, string> = {
+  pubmed: "bg-blue-100 text-blue-700",
+  CPS: "bg-purple-100 text-purple-700",
+  HEALTH_CANADA_PRODUCT_MONOGRAPH: "bg-green-100 text-green-700",
+  HEALTH_CANADA_DPD: "bg-amber-100 text-amber-700",
+  HEALTH_CANADA_NOC: "bg-teal-100 text-teal-700",
+  HEALTH_CANADA_SUMMARY_REPORT: "bg-mist text-ink/60",
+};
+
+function ChunkBadges({ chunks }: { chunks: Record<string, number> }) {
+  const entries = Object.entries(chunks)
+    .filter(([, c]) => c > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (!entries.length) {
+    return (
+      <Text className="rounded-md bg-mist px-2 py-0.5 text-xs font-semibold text-ink/40">
+        no chunks
+      </Text>
+    );
+  }
+  return (
+    <>
+      {entries.map(([kind, count]) => (
+        <Text
+          className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+            chunkKindStyle[kind] ?? "bg-mist text-ink/60"
+          }`}
+          key={kind}
+        >
+          {chunkKindLabel[kind] ?? label(kind)} {count}
+        </Text>
+      ))}
+    </>
+  );
+}
+
+function formatIdValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map((v) => String(v)).join(", ");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function IdentifierList({
+  identifiers,
+}: {
+  identifiers: Record<string, unknown>;
+}) {
+  const entries = Object.entries(identifiers).filter(([, v]) => {
+    if (v == null) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === "string") return v.trim().length > 0;
+    return true;
+  });
+  if (!entries.length) {
+    return <Text className="text-xs text-ink/50">None</Text>;
+  }
+  return (
+    <View className="flex-row flex-wrap gap-2">
+      {entries.map(([k, v]) => (
+        <View
+          className="rounded-md border border-ink/10 bg-mist px-2 py-1"
+          key={k}
+        >
+          <Text className="text-[10px] font-semibold uppercase text-ink/40">
+            {k.replace(/_/g, " ")}
+          </Text>
+          <Text className="text-xs text-ink/70">{formatIdValue(v)}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export default function KgExplorerScreen() {
   return (
     <ReviewPasswordGate>
@@ -343,6 +424,7 @@ function KgExplorerContent() {
                       <Tag>{label(result.type)}</Tag>
                       <Tag>{result.source}</Tag>
                       <Tag>{result.degree} edges</Tag>
+                      <ChunkBadges chunks={result.chunks} />
                     </View>
                   </Pressable>
                 );
@@ -871,9 +953,7 @@ function NodeInspector({
       ) : null}
 
       <Detail title="Identifiers">
-        <Text className="text-xs leading-5 text-ink/60">
-          {JSON.stringify(node.identifiers)}
-        </Text>
+        <IdentifierList identifiers={node.identifiers} />
       </Detail>
 
       {node.synonyms.length ? (
@@ -1031,6 +1111,7 @@ function MoietyGroupCard({
                 <Tag>{label(m.type)}</Tag>
                 <Tag>{m.source}</Tag>
                 <Tag>{m.degree} edges</Tag>
+                <ChunkBadges chunks={m.chunks} />
               </Pressable>
             );
           })}

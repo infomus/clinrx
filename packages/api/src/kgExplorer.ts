@@ -19,6 +19,7 @@ export interface KgSearchNode {
   identifiers: Record<string, unknown>;
   summary: string | null;
   degree: number;
+  chunks: Record<string, number>;
 }
 
 export interface KgNodeDetail {
@@ -96,6 +97,7 @@ export async function searchKgExplorerNodes(
     identifiers: (row.identifiers as Record<string, unknown>) ?? {},
     summary: (row.summary as string | null) ?? null,
     degree: Number(row.degree ?? 0),
+    chunks: (row.chunks as Record<string, number>) ?? {},
   }));
 }
 
@@ -145,6 +147,7 @@ export interface KgMoietyMember {
   type: KgNodeType;
   source: string;
   degree: number;
+  chunks: Record<string, number>;
 }
 
 export interface KgMoietyGroup {
@@ -203,6 +206,7 @@ export async function searchKgGroupedNodes(
       type: m.type as KgNodeType,
       source: m.source as string,
       degree: Number(m.degree ?? 0),
+      chunks: (m.chunks as Record<string, number>) ?? {},
     })),
   }));
 }
