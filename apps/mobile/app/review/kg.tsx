@@ -124,6 +124,7 @@ function KgExplorerContent() {
   const [neighborQuery, setNeighborQuery] = useState("");
   const [offset, setOffset] = useState(0);
   const [edgeView, setEdgeView] = useState<"graph" | "table">("graph");
+  const [filtersOpen, setFiltersOpen] = useState(true);
 
   // Debounce the search box.
   useEffect(() => {
@@ -421,9 +422,21 @@ function KgExplorerContent() {
 
             {/* Edge filters */}
             <View className="mt-4 rounded-lg border border-ink/10 bg-white p-4">
-              <Text className="text-sm font-semibold text-ink">
-                Filter edges
-              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: filtersOpen }}
+                className="flex-row items-center justify-between"
+                onPress={() => setFiltersOpen((v) => !v)}
+              >
+                <Text className="text-sm font-semibold text-ink">
+                  Filter edges
+                </Text>
+                <Text className="text-base font-semibold text-leaf">
+                  {filtersOpen ? "▾" : "▸"}
+                </Text>
+              </Pressable>
+              {!filtersOpen ? null : (
+                <>
               <FilterRow title="Relation">
                 <Chip
                   active={relation === null}
@@ -471,6 +484,8 @@ function KgExplorerContent() {
                   value={neighborQuery}
                 />
               </View>
+                </>
+              )}
             </View>
 
             {/* Edges: graph or table */}
