@@ -20,6 +20,7 @@ import type {
   KgRelation,
 } from "@clinrx/types";
 
+import { KgGraphCanvas } from "@/components/KgGraphCanvas";
 import { ReviewPasswordGate, reviewPassword } from "@/components/ReviewPasswordGate";
 import { supabase } from "@/lib/supabase";
 
@@ -85,6 +86,7 @@ function KgExplorerContent() {
   const [severities, setSeverities] = useState<InteractionSeverity[]>([]);
   const [neighborQuery, setNeighborQuery] = useState("");
   const [offset, setOffset] = useState(0);
+  const [edgeView, setEdgeView] = useState<"graph" | "table">("graph");
 
   // Debounce the search box.
   useEffect(() => {
@@ -264,12 +266,26 @@ function KgExplorerContent() {
               </View>
             </View>
 
-            {/* Edge table */}
+            {/* Edges: graph or table */}
             <View className="mt-4 rounded-lg border border-ink/10 bg-white p-4">
               <View className="flex-row flex-wrap items-center justify-between gap-2">
-                <Text className="text-sm font-semibold text-ink">
-                  Edges {total ? `(${total})` : ""}
-                </Text>
+                <View className="flex-row flex-wrap items-center gap-2">
+                  <Text className="text-sm font-semibold text-ink">
+                    Edges {total ? `(${total})` : ""}
+                  </Text>
+                  <View className="flex-row gap-1">
+                    <Chip
+                      active={edgeView === "graph"}
+                      onPress={() => setEdgeView("graph")}
+                      text="Graph"
+                    />
+                    <Chip
+                      active={edgeView === "table"}
+                      onPress={() => setEdgeView("table")}
+                      text="Table"
+                    />
+                  </View>
+                </View>
                 {total > PAGE_SIZE ? (
                   <View className="flex-row items-center gap-2">
                     <Text className="text-xs text-ink/60">
@@ -307,7 +323,19 @@ function KgExplorerContent() {
 
               {edgesQuery.isLoading ? (
                 <ActivityIndicator className="mt-3" />
-              ) : edgePage?.edges.length ? (
+              ) : !edgePage?.edges.length ? (
+                <Text className="mt-3 text-sm text-ink/60">
+                  No edges match these filters.
+                </Text>
+              ) : edgeView === "graph" ? (
+                <View className="mt-3">
+                  <KgGraphCanvas
+                    center={{ id: node.id, name: node.canonicalName, type: node.type }}
+                    edges={edgePage.edges}
+                    onSelectNode={setSelectedNodeId}
+                  />
+                </View>
+              ) : (
                 <View className="mt-3 gap-2">
                   {edgePage.edges.map((edge) => (
                     <View
@@ -362,10 +390,6 @@ function KgExplorerContent() {
                     </View>
                   ))}
                 </View>
-              ) : (
-                <Text className="mt-3 text-sm text-ink/60">
-                  No edges match these filters.
-                </Text>
               )}
             </View>
           </>
