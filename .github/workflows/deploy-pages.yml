@@ -58,6 +58,8 @@ jobs:
           cp apps/mobile/dist/index.html apps/mobile/dist/404.html
           mkdir -p apps/mobile/dist/review/calibration
           cp apps/mobile/dist/index.html apps/mobile/dist/review/calibration/index.html
+          mkdir -p apps/mobile/dist/review/kg
+          cp apps/mobile/dist/index.html apps/mobile/dist/review/kg/index.html
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

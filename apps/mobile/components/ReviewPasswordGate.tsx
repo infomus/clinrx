@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
-const reviewPassword = "Ilovelayla123!";
+export const reviewPassword = "Ilovelayla123!";
 const reviewPasswordStorageKey = "clinrx.reviewPasswordAccepted.v1";
 
 export function ReviewPasswordGate({
