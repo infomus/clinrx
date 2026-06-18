@@ -13,6 +13,13 @@ A practical, screen-by-screen guide to the ClinRx interaction-checker **calibrat
 
 You'll land directly on the calibration set. If a page ever shows "Could not load…", just refresh.
 
+### Review pass switcher
+At the top there's a **Review pass** toggle:
+- **1B · Ground-truth sources** *(start here)* — for each of the 50 pairs, paste the source(s) you'd consider the correct ground truth to cite for that interaction (one per line: CPS / Health Canada monograph + section, a guideline, a primary article, or a URL). Everything autosaves. This is independent of pass 2 — we use it to cross-check what each retrieval strategy actually pulled and find retrieval improvements.
+- **2 · Model grading** — the per-model grading pass (failure modes / missing context / notes), documented below.
+
+The rest of this guide describes **pass 2**.
+
 ---
 
 ## 2. The screen, top to bottom

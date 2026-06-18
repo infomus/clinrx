@@ -114,6 +114,24 @@ function RuntimeEvaluationContent() {
     [draftsByLabelKey, ownLabelsByKey, requests],
   );
 
+  // Which calibration pass the reviewer is on. 1B = paste the ground-truth
+  // sources that should be cited for each interaction; 2 = grade each model.
+  const [calibrationPass, setCalibrationPass] = useState<"sources" | "grading">(
+    "sources",
+  );
+  const sourcesEntered = useMemo(
+    () =>
+      requests.filter((item) => {
+        const label = resolveDraftLabel(
+          item.request.id,
+          null,
+          draftsByLabelKey,
+          ownLabelsByKey,
+        );
+        return Boolean(label?.suggestedPrevention?.trim());
+      }).length,
+    [requests, draftsByLabelKey, ownLabelsByKey],
+  );
   const [filterMode, setFilterMode] = useState<
     "all" | "ungraded" | "disagreements"
   >("all");
@@ -227,7 +245,29 @@ function RuntimeEvaluationContent() {
           sets={sets}
           onSelect={setSelectedSetId}
         />
-        <MetricsPanel metrics={metrics} />
+        <PassSwitcher
+          calibrationPass={calibrationPass}
+          onChange={setCalibrationPass}
+        />
+        {calibrationPass === "sources" ? (
+          <View className="rounded-lg border border-ink/10 bg-white p-4">
+            <View className="flex-row flex-wrap items-center gap-2">
+              <MetricPill
+                label="Sources entered"
+                value={`${sourcesEntered}/${requests.length}`}
+              />
+            </View>
+            <Text className="mt-2 text-xs leading-5 text-ink/60">
+              Pass 1B — for each pair, paste the source(s) you'd consider the
+              ground truth for citing this interaction (CPS / Health Canada
+              monograph, guideline, primary literature, URLs — one per line).
+              This doesn't change pass 2; we cross-reference it against what each
+              retrieval strategy pulled to find retrieval improvements.
+            </Text>
+          </View>
+        ) : (
+          <MetricsPanel metrics={metrics} />
+        )}
         <View className="mt-3 rounded-lg border border-ink/10 bg-white px-4 py-3">
           <Text className="text-sm leading-5 text-ink/70">
             {saveLabelMutation.isPending
@@ -252,61 +292,76 @@ function RuntimeEvaluationContent() {
             body="Generate an interaction runtime evaluation set before starting pharmacist calibration."
           />
         ) : requests.length ? (
-          <>
-            <ReviewFilterBar
-              filterMode={filterMode}
-              onChange={setFilterMode}
-              onJumpToNext={jumpToNextUngraded}
-              counts={{
-                all: requests.length,
-                ungraded: requests.filter(
-                  (item) => !statusByRequest.get(item.request.id)?.complete,
-                ).length,
-                disagreements: requests.filter(
-                  (item) =>
-                    (statusByRequest.get(item.request.id)?.mismatchCount ?? 0) >
-                      0,
-                ).length,
-              }}
-            />
-            <View
-              className="mt-4 gap-4"
-              onLayout={(event) => {
-                listTop.current = event.nativeEvent.layout.y;
-              }}
-            >
-              {visibleRequests.length ? (
-                visibleRequests.map((item) => (
-                  <View
-                    key={item.request.id}
-                    onLayout={(event) => {
-                      cardOffsets.current[item.request.id] =
-                        event.nativeEvent.layout.y;
-                    }}
-                  >
-                    <RuntimeEvaluationCard
-                      index={indexByRequestId.get(item.request.id) ?? 0}
-                      item={item}
-                      labelsByKey={ownLabelsByKey}
-                      draftsByLabelKey={draftsByLabelKey}
-                      setLabel={(runId, label) =>
-                        updateLabel(item, runId, label)
-                      }
-                    />
-                  </View>
-                ))
-              ) : (
-                <EmptyState
-                  title="Nothing here"
-                  body={
-                    filterMode === "ungraded"
-                      ? "Every pair is fully graded. Switch to All to review them again."
-                      : "No pairs have a model that disagrees with your verdict."
-                  }
+          calibrationPass === "sources" ? (
+            <View className="mt-4 gap-4">
+              {requests.map((item, index) => (
+                <SourcesCard
+                  key={item.request.id}
+                  index={index}
+                  item={item}
+                  labelsByKey={ownLabelsByKey}
+                  draftsByLabelKey={draftsByLabelKey}
+                  setLabel={(label) => updateLabel(item, null, label)}
                 />
-              )}
+              ))}
             </View>
-          </>
+          ) : (
+            <>
+              <ReviewFilterBar
+                filterMode={filterMode}
+                onChange={setFilterMode}
+                onJumpToNext={jumpToNextUngraded}
+                counts={{
+                  all: requests.length,
+                  ungraded: requests.filter(
+                    (item) => !statusByRequest.get(item.request.id)?.complete,
+                  ).length,
+                  disagreements: requests.filter(
+                    (item) =>
+                      (statusByRequest.get(item.request.id)?.mismatchCount ??
+                        0) > 0,
+                  ).length,
+                }}
+              />
+              <View
+                className="mt-4 gap-4"
+                onLayout={(event) => {
+                  listTop.current = event.nativeEvent.layout.y;
+                }}
+              >
+                {visibleRequests.length ? (
+                  visibleRequests.map((item) => (
+                    <View
+                      key={item.request.id}
+                      onLayout={(event) => {
+                        cardOffsets.current[item.request.id] =
+                          event.nativeEvent.layout.y;
+                      }}
+                    >
+                      <RuntimeEvaluationCard
+                        index={indexByRequestId.get(item.request.id) ?? 0}
+                        item={item}
+                        labelsByKey={ownLabelsByKey}
+                        draftsByLabelKey={draftsByLabelKey}
+                        setLabel={(runId, label) =>
+                          updateLabel(item, runId, label)
+                        }
+                      />
+                    </View>
+                  ))
+                ) : (
+                  <EmptyState
+                    title="Nothing here"
+                    body={
+                      filterMode === "ungraded"
+                        ? "Every pair is fully graded. Switch to All to review them again."
+                        : "No pairs have a model that disagrees with your verdict."
+                    }
+                  />
+                )}
+              </View>
+            </>
+          )
         ) : (
           <EmptyState
             title="Empty evaluation set"
@@ -315,6 +370,137 @@ function RuntimeEvaluationContent() {
         )}
       </View>
     </ScrollView>
+  );
+}
+
+function PassSwitcher({
+  calibrationPass,
+  onChange,
+}: {
+  calibrationPass: "sources" | "grading";
+  onChange: (pass: "sources" | "grading") => void;
+}) {
+  const options: Array<{
+    label: string;
+    value: "sources" | "grading";
+  }> = [
+    { label: "1B · Ground-truth sources", value: "sources" },
+    { label: "2 · Model grading", value: "grading" },
+  ];
+
+  return (
+    <View className="mb-3 rounded-lg border border-ink/10 bg-white p-3">
+      <Text className="text-xs font-semibold uppercase text-ink/50">
+        Review pass
+      </Text>
+      <View className="mt-2 flex-row flex-wrap gap-2">
+        {options.map((option) => {
+          const selected = calibrationPass === option.value;
+
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              className={`rounded-lg border px-3 py-2 ${
+                selected ? "border-leaf bg-leaf" : "border-ink/10 bg-white"
+              }`}
+              key={option.value}
+              onPress={() => onChange(option.value)}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  selected ? "text-white" : "text-ink"
+                }`}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function SourcesCard({
+  draftsByLabelKey,
+  index,
+  item,
+  labelsByKey,
+  setLabel,
+}: {
+  draftsByLabelKey: Record<string, DraftInteractionLabel>;
+  index: number;
+  item: InteractionEvaluationRequestWithRun;
+  labelsByKey: Map<string, InteractionEvaluationLabel>;
+  setLabel: (label: DraftInteractionLabel) => void;
+}) {
+  const { request } = item;
+  const key = getLabelKey(request.id, null);
+  const label = draftsByLabelKey[key] ??
+    (labelsByKey.get(key)
+      ? toDraftLabel(labelsByKey.get(key)!)
+      : createEmptyLabel(null));
+  const sources = label.suggestedPrevention ?? "";
+  const hasSources = Boolean(sources.trim());
+
+  return (
+    <View
+      className={`rounded-lg bg-white p-4 ${
+        hasSources ? "border border-leaf/40" : "border border-ink/10"
+      }`}
+    >
+      <View className="flex-row flex-wrap items-center justify-between gap-2">
+        <Text className="text-sm font-semibold uppercase text-leaf">
+          #{index + 1}
+        </Text>
+        <Text
+          className={`rounded-md px-2 py-1 text-xs font-semibold uppercase ${
+            hasSources ? "bg-green-100 text-green-700" : "bg-mist text-ink/60"
+          }`}
+        >
+          {hasSources ? "✓ Sources entered" : "No sources yet"}
+        </Text>
+      </View>
+
+      <Text className="mt-3 text-xl font-bold text-ink">
+        {request.inputSourceText} + {request.inputTargetText}
+      </Text>
+      <View className="mt-1 flex-row flex-wrap items-center gap-2">
+        <Text className="text-sm leading-5 text-ink/60">
+          Request ID {request.id.slice(0, 8)}
+        </Text>
+        {request.samplingReason ? (
+          <Text className="rounded-md bg-mist px-2 py-1 text-xs font-semibold uppercase text-ink/50">
+            {formatLabel(request.samplingReason)}
+          </Text>
+        ) : null}
+      </View>
+
+      <View className="mt-4">
+        <Text className="text-sm font-semibold text-ink">
+          Ground-truth sources for this interaction
+        </Text>
+        <Text className="mt-1 text-xs leading-5 text-ink/60">
+          Paste the source(s) that should be cited for this interaction — one per
+          line (CPS / Health Canada monograph, guideline, primary article, or a
+          URL). These are treated as the best sources and cross-referenced with
+          what each retrieval strategy found.
+        </Text>
+        <TextInput
+          className="mt-3 min-h-40 rounded-lg border border-ink/15 bg-white px-3 py-3 text-base leading-6 text-ink"
+          maxLength={8000}
+          multiline
+          onChangeText={(text) =>
+            setLabel({ ...label, suggestedPrevention: text })
+          }
+          placeholder={"e.g.\nCPS — Warfarin monograph, Drug Interactions\nhttps://pubmed.ncbi.nlm.nih.gov/123456/\nHealth Canada PM — Amiodarone, section 7"}
+          placeholderTextColor="#7b8580"
+          textAlignVertical="top"
+          value={sources}
+        />
+      </View>
+    </View>
   );
 }
 
