@@ -237,6 +237,77 @@ export async function getKgDuplicationOverview(
   };
 }
 
+export interface KgChunkStat {
+  kind: string;
+  count: number;
+}
+
+export interface KgChunk {
+  layer: "monograph" | "pubmed";
+  kind: string;
+  section: string | null;
+  sourceType: string | null;
+  pmid: string | null;
+  url: string | null;
+  content: string;
+}
+
+export interface KgChunkPage {
+  total: number;
+  chunks: KgChunk[];
+}
+
+export async function getKgNodeChunkStats(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  nodeId: string,
+): Promise<KgChunkStat[]> {
+  const { data, error } = await client.rpc("kg_explorer_node_chunk_stats", {
+    p_passcode: passcode,
+    p_node_id: nodeId,
+  });
+  if (error) throw error;
+  return ((data as Record<string, unknown>[] | null) ?? []).map((r) => ({
+    kind: r.kind as string,
+    count: Number(r.count ?? 0),
+  }));
+}
+
+export async function getKgNodeChunks(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  nodeId: string,
+  options: {
+    query?: string | null;
+    kind?: string | null;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<KgChunkPage> {
+  const { data, error } = await client.rpc("kg_explorer_node_chunks", {
+    p_passcode: passcode,
+    p_node_id: nodeId,
+    p_query: options.query ?? null,
+    p_kind: options.kind ?? null,
+    p_limit: options.limit ?? 25,
+    p_offset: options.offset ?? 0,
+  });
+  if (error) throw error;
+  const row = (data as Record<string, unknown> | null) ?? {};
+  return {
+    total: Number(row.total ?? 0),
+    chunks: ((row.chunks as Record<string, unknown>[] | null) ?? []).map((c) => ({
+      layer: (c.layer as "monograph" | "pubmed") ?? "monograph",
+      kind: c.kind as string,
+      section: (c.section as string | null) ?? null,
+      sourceType: (c.source_type as string | null) ?? null,
+      pmid: (c.pmid as string | null) ?? null,
+      url: (c.url as string | null) ?? null,
+      content: (c.content as string) ?? "",
+    })),
+  };
+}
+
 export async function getKgExplorerEdges(
   client: ClinRxSupabaseClient,
   passcode: string,

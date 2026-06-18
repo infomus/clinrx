@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   Pressable,
   ScrollView,
   Text,
@@ -13,6 +14,8 @@ import {
   getKgDuplicationOverview,
   getKgExplorerNode,
   getKgExplorerEdges,
+  getKgNodeChunks,
+  getKgNodeChunkStats,
   type KgMoietyGroup,
   searchKgExplorerNodes,
   searchKgGroupedNodes,
@@ -87,7 +90,9 @@ function KgExplorerContent() {
     index: -1,
   });
   const selectedNodeId = nav.index >= 0 ? nav.stack[nav.index] : null;
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const navigateToNode = useCallback((id: string) => {
+    setDrawerOpen(true);
     setNav((n) => {
       const current = n.index >= 0 ? n.stack[n.index] : null;
       if (id === current) return n;
@@ -184,6 +189,7 @@ function KgExplorerContent() {
   };
 
   return (
+    <>
     <ScrollView className="flex-1 bg-mist">
       <View className="min-h-screen px-5 pb-10 pt-16">
         <Text className="text-sm font-semibold uppercase text-leaf">
@@ -390,7 +396,28 @@ function KgExplorerContent() {
           <ActivityIndicator className="mt-6" />
         ) : node ? (
           <>
-            <NodeInspector node={node} />
+            <View className="mt-4 flex-row flex-wrap items-center justify-between gap-2 rounded-lg border border-leaf/40 bg-white p-3">
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Text className="text-lg font-bold text-ink">
+                  {node.canonicalName}
+                </Text>
+                <Tag>{label(node.type)}</Tag>
+                <Tag>{node.source}</Tag>
+                <Tag>{node.degree} edges</Tag>
+                <Tag>{node.chunkCount} chunks</Tag>
+              </View>
+              {!drawerOpen ? (
+                <Pressable
+                  accessibilityRole="button"
+                  className="rounded-md border border-leaf bg-leaf px-3 py-2"
+                  onPress={() => setDrawerOpen(true)}
+                >
+                  <Text className="text-sm font-semibold text-white">
+                    Node details ▸
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
 
             {/* Edge filters */}
             <View className="mt-4 rounded-lg border border-ink/10 bg-white p-4">
@@ -578,6 +605,235 @@ function KgExplorerContent() {
         )}
       </View>
     </ScrollView>
+    {node && drawerOpen ? (
+      <KgNodeDrawer
+        key={node.id}
+        node={node}
+        onClose={() => setDrawerOpen(false)}
+        onSelectNode={navigateToNode}
+      />
+    ) : null}
+    </>
+  );
+}
+
+const CHUNK_PAGE = 15;
+
+function KgNodeDrawer({
+  node,
+  onClose,
+}: {
+  node: NonNullable<Awaited<ReturnType<typeof getKgExplorerNode>>>;
+  onClose: () => void;
+  onSelectNode: (id: string) => void;
+}) {
+  const [chunkQuery, setChunkQuery] = useState("");
+  const [chunkSearch, setChunkSearch] = useState("");
+  const [chunkKind, setChunkKind] = useState<string | null>(null);
+  const [chunkOffset, setChunkOffset] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => setChunkSearch(chunkQuery.trim()), 250);
+    return () => clearTimeout(t);
+  }, [chunkQuery]);
+  useEffect(() => {
+    setChunkOffset(0);
+  }, [chunkSearch, chunkKind]);
+
+  const statsQuery = useQuery({
+    queryKey: ["kg-chunk-stats", node.id],
+    queryFn: () => getKgNodeChunkStats(supabase, reviewPassword, node.id),
+  });
+  const chunksQuery = useQuery({
+    queryKey: ["kg-chunks", node.id, chunkSearch, chunkKind, chunkOffset],
+    queryFn: () =>
+      getKgNodeChunks(supabase, reviewPassword, node.id, {
+        query: chunkSearch || null,
+        kind: chunkKind,
+        limit: CHUNK_PAGE,
+        offset: chunkOffset,
+      }),
+  });
+
+  const stats = statsQuery.data ?? [];
+  const totalChunks = stats.reduce((s, x) => s + x.count, 0);
+  const chunkPage = chunksQuery.data;
+  const total = chunkPage?.total ?? 0;
+
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Close details"
+        onPress={onClose}
+        style={{
+          position: "fixed" as "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 40,
+          backgroundColor: "rgba(15,23,42,0.25)",
+        }}
+      />
+      <View
+        className="border-l border-ink/10 bg-mist"
+        style={{
+          position: "fixed" as "absolute",
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 480,
+          maxWidth: "94%",
+          zIndex: 50,
+        }}
+      >
+        <View className="flex-row items-center justify-between border-b border-ink/10 bg-white px-4 py-3">
+          <Text className="text-sm font-semibold uppercase text-leaf">
+            Node details
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            className="rounded-md border border-ink/15 px-3 py-1"
+            onPress={onClose}
+          >
+            <Text className="text-sm font-semibold text-ink">✕ Close</Text>
+          </Pressable>
+        </View>
+
+        <ScrollView className="flex-1 px-4 py-3">
+          <NodeInspector node={node} />
+
+          <View className="mt-4 rounded-lg border border-ink/10 bg-white p-3">
+            <Text className="text-sm font-semibold text-ink">
+              Evidence chunks ({totalChunks})
+            </Text>
+            <Text className="mt-1 text-xs leading-5 text-ink/60">
+              Monograph chunks live on this node; PubMed chunks are linked by
+              article. Tap a source to filter, or search within the text.
+            </Text>
+            <View className="mt-2 flex-row flex-wrap gap-2">
+              <Chip
+                active={chunkKind === null}
+                onPress={() => setChunkKind(null)}
+                text={`All (${totalChunks})`}
+              />
+              {stats.map((s) => (
+                <Chip
+                  active={chunkKind === s.kind}
+                  key={s.kind}
+                  onPress={() =>
+                    setChunkKind(chunkKind === s.kind ? null : s.kind)
+                  }
+                  text={`${label(s.kind)} (${s.count})`}
+                />
+              ))}
+            </View>
+            <TextInput
+              className="mt-3 rounded-lg border border-ink/15 bg-white px-3 py-2 text-base text-ink"
+              onChangeText={setChunkQuery}
+              placeholder="Search within chunk text…"
+              placeholderTextColor="#7b8580"
+              value={chunkQuery}
+            />
+
+            <View className="mt-2 flex-row items-center justify-between">
+              <Text className="text-xs text-ink/60">
+                {total
+                  ? `${chunkOffset + 1}–${Math.min(chunkOffset + CHUNK_PAGE, total)} of ${total}`
+                  : "0 results"}
+              </Text>
+              {total > CHUNK_PAGE ? (
+                <View className="flex-row gap-2">
+                  <Pressable
+                    className="rounded-md border border-ink/15 px-2 py-1"
+                    disabled={chunkOffset === 0}
+                    onPress={() =>
+                      setChunkOffset(Math.max(chunkOffset - CHUNK_PAGE, 0))
+                    }
+                  >
+                    <Text
+                      className={`text-xs font-semibold ${
+                        chunkOffset === 0 ? "text-ink/30" : "text-leaf"
+                      }`}
+                    >
+                      Prev
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    className="rounded-md border border-ink/15 px-2 py-1"
+                    disabled={chunkOffset + CHUNK_PAGE >= total}
+                    onPress={() => setChunkOffset(chunkOffset + CHUNK_PAGE)}
+                  >
+                    <Text
+                      className={`text-xs font-semibold ${
+                        chunkOffset + CHUNK_PAGE >= total
+                          ? "text-ink/30"
+                          : "text-leaf"
+                      }`}
+                    >
+                      Next
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+
+            {chunksQuery.isLoading ? (
+              <ActivityIndicator className="mt-3" />
+            ) : chunkPage?.chunks.length ? (
+              <View className="mt-2 gap-2">
+                {chunkPage.chunks.map((c, i) => (
+                  <View
+                    className="rounded-lg border border-ink/10 bg-mist p-3"
+                    key={`${c.pmid ?? "mono"}-${i}`}
+                  >
+                    <View className="flex-row flex-wrap items-center gap-2">
+                      <Text className="rounded-md bg-white px-2 py-1 text-xs font-semibold uppercase text-ink/60">
+                        {label(c.kind)}
+                        {c.sourceType ? ` · ${label(c.sourceType)}` : ""}
+                      </Text>
+                      {c.section ? (
+                        <Text className="text-xs font-semibold text-ink/50">
+                          {c.section}
+                        </Text>
+                      ) : null}
+                      {c.pmid ? (
+                        <Pressable
+                          onPress={() =>
+                            void Linking.openURL(
+                              `https://pubmed.ncbi.nlm.nih.gov/${c.pmid}/`,
+                            )
+                          }
+                        >
+                          <Text className="text-xs font-semibold text-leaf underline">
+                            PMID {c.pmid}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                      {c.url ? (
+                        <Pressable onPress={() => void Linking.openURL(c.url!)}>
+                          <Text className="text-xs font-semibold text-leaf underline">
+                            source
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Text className="mt-2 text-sm leading-5 text-ink/70">
+                      {c.content}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text className="mt-3 text-sm text-ink/60">
+                No chunks{chunkSearch ? " match this search" : ""}.
+              </Text>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    </>
   );
 }
 
