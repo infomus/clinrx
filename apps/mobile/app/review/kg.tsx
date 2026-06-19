@@ -80,6 +80,7 @@ const chunkKindLabel: Record<string, string> = {
   HEALTH_CANADA_NOC: "NOC",
   HEALTH_CANADA_SUMMARY_REPORT: "HC summary",
   pubmed: "PubMed",
+  safety: "Safety",
 };
 const chunkKindStyle: Record<string, string> = {
   pubmed: "bg-blue-100 text-blue-700",
@@ -88,6 +89,7 @@ const chunkKindStyle: Record<string, string> = {
   HEALTH_CANADA_DPD: "bg-amber-100 text-amber-700",
   HEALTH_CANADA_NOC: "bg-teal-100 text-teal-700",
   HEALTH_CANADA_SUMMARY_REPORT: "bg-mist text-ink/60",
+  safety: "bg-red-100 text-red-700",
 };
 
 function ChunkBadges({ chunks }: { chunks: Record<string, number> }) {
@@ -115,6 +117,17 @@ function ChunkBadges({ chunks }: { chunks: Record<string, number> }) {
       ))}
     </>
   );
+}
+
+const sourceShortLabel: Record<string, string> = {
+  CPS: "CPS",
+  HEALTH_CANADA_DPD: "DPD",
+  HEALTH_CANADA_NOC: "NOC",
+  HEALTH_CANADA_SUMMARY_REPORT: "HC summary",
+  manual_seed: "manual",
+};
+function shortSource(s: string): string {
+  return sourceShortLabel[s] ?? s;
 }
 
 function formatIdValue(value: unknown): string {
@@ -753,7 +766,11 @@ function KgNodeDrawer({
   });
 
   const stats = statsQuery.data ?? [];
-  const totalChunks = stats.reduce((s, x) => s + x.count, 0);
+  // "safety" is a section overlay on monograph chunks, so exclude it from the
+  // total to avoid double-counting.
+  const totalChunks = stats
+    .filter((x) => x.kind !== "safety")
+    .reduce((s, x) => s + x.count, 0);
   const chunkPage = chunksQuery.data;
   const total = chunkPage?.total ?? 0;
 
@@ -822,7 +839,7 @@ function KgNodeDrawer({
                   onPress={() =>
                     setChunkKind(chunkKind === s.kind ? null : s.kind)
                   }
-                  text={`${label(s.kind)} (${s.count})`}
+                  text={`${chunkKindLabel[s.kind] ?? label(s.kind)} (${s.count})`}
                 />
               ))}
             </View>
@@ -1089,7 +1106,7 @@ function MoietyGroupCard({
         {group.nIngredient ? <Tag>{group.nIngredient} ing</Tag> : null}
         {group.nClass ? <Tag>{group.nClass} class</Tag> : null}
         {group.nProduct ? <Tag>{group.nProduct} product</Tag> : null}
-        <Tag>{group.nSources} sources</Tag>
+        <Tag>{group.sources.map(shortSource).join(" · ")}</Tag>
         <Text className="text-xs font-semibold uppercase text-leaf">
           {open ? "Hide" : "Show"}
         </Text>
