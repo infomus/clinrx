@@ -19,6 +19,7 @@ import {
   type KgMoietyGroup,
   searchKgExplorerNodes,
   searchKgGroupedNodes,
+  suggestKgNodeNames,
 } from "@clinrx/api";
 import type {
   EdgeReviewStatus,
@@ -218,6 +219,7 @@ function KgExplorerContent() {
   const canGoForward = nav.index < nav.stack.length - 1;
   const [searchView, setSearchView] = useState<"grouped" | "nodes">("grouped");
   const [sourceFilter, setSourceFilter] = useState<string[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(true);
   const [showOverview, setShowOverview] = useState(false);
 
   // Edge filters.
@@ -241,6 +243,11 @@ function KgExplorerContent() {
   }, [selectedNodeId, relation, statuses, severities, neighborQuery]);
 
   const sources = sourceFilter.length ? sourceFilter : null;
+  const suggestQuery = useQuery({
+    enabled: searchTerm.length >= 2 && suggestOpen,
+    queryKey: ["kg-suggest", searchTerm],
+    queryFn: () => suggestKgNodeNames(supabase, reviewPassword, searchTerm, 8),
+  });
   const searchQuery = useQuery({
     enabled: searchTerm.length >= 2 && searchView === "nodes",
     queryKey: ["kg-search", searchTerm, sourceFilter],
@@ -403,11 +410,32 @@ function KgExplorerContent() {
           </View>
           <TextInput
             className="mt-2 rounded-lg border border-ink/15 bg-white px-3 py-3 text-base text-ink"
-            onChangeText={setQuery}
+            onChangeText={(text) => {
+              setQuery(text);
+              setSuggestOpen(true);
+            }}
             placeholder="e.g. warfarin, amiodarone, CYP3A4, statins"
             placeholderTextColor="#7b8580"
             value={query}
           />
+          {suggestOpen && searchTerm.length >= 2 && suggestQuery.data?.length ? (
+            <View className="mt-1 overflow-hidden rounded-lg border border-ink/15 bg-white">
+              {suggestQuery.data.map((s) => (
+                <Pressable
+                  accessibilityRole="button"
+                  className="flex-row items-center justify-between border-b border-ink/5 px-3 py-2"
+                  key={s.name}
+                  onPress={() => {
+                    setQuery(s.name);
+                    setSuggestOpen(false);
+                  }}
+                >
+                  <Text className="text-sm text-ink">{s.name}</Text>
+                  <Text className="text-xs text-ink/40">{s.count}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           <View className="mt-2 flex-row flex-wrap items-center gap-2">
             <Text className="text-xs font-semibold uppercase text-ink/50">
               Source

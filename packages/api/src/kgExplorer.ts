@@ -77,6 +77,29 @@ export interface KgEdgeFilters {
   offset?: number;
 }
 
+export interface KgNameSuggestion {
+  name: string;
+  count: number;
+}
+
+export async function suggestKgNodeNames(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  query: string,
+  limit = 10,
+): Promise<KgNameSuggestion[]> {
+  const { data, error } = await client.rpc("kg_explorer_suggest", {
+    p_passcode: passcode,
+    p_query: query,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  return ((data as Record<string, unknown>[] | null) ?? []).map((r) => ({
+    name: r.name as string,
+    count: Number(r.count ?? 0),
+  }));
+}
+
 export async function searchKgExplorerNodes(
   client: ClinRxSupabaseClient,
   passcode: string,
