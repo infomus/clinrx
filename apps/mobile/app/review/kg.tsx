@@ -130,6 +130,14 @@ function shortSource(s: string): string {
   return sourceShortLabel[s] ?? s;
 }
 
+const SOURCE_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "CPS", label: "CPS" },
+  { value: "HEALTH_CANADA_DPD", label: "DPD" },
+  { value: "HEALTH_CANADA_NOC", label: "NOC" },
+  { value: "HEALTH_CANADA_SUMMARY_REPORT", label: "HC summary" },
+  { value: "manual_seed", label: "manual" },
+];
+
 function formatIdValue(value: unknown): string {
   if (Array.isArray(value)) return value.map((v) => String(v)).join(", ");
   if (value && typeof value === "object") return JSON.stringify(value);
@@ -209,6 +217,7 @@ function KgExplorerContent() {
   const canGoBack = nav.index > 0;
   const canGoForward = nav.index < nav.stack.length - 1;
   const [searchView, setSearchView] = useState<"grouped" | "nodes">("grouped");
+  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
   const [showOverview, setShowOverview] = useState(false);
 
   // Edge filters.
@@ -231,15 +240,18 @@ function KgExplorerContent() {
     setOffset(0);
   }, [selectedNodeId, relation, statuses, severities, neighborQuery]);
 
+  const sources = sourceFilter.length ? sourceFilter : null;
   const searchQuery = useQuery({
     enabled: searchTerm.length >= 2 && searchView === "nodes",
-    queryKey: ["kg-search", searchTerm],
-    queryFn: () => searchKgExplorerNodes(supabase, reviewPassword, searchTerm, 25),
+    queryKey: ["kg-search", searchTerm, sourceFilter],
+    queryFn: () =>
+      searchKgExplorerNodes(supabase, reviewPassword, searchTerm, 25, sources),
   });
   const groupedQuery = useQuery({
     enabled: searchTerm.length >= 2 && searchView === "grouped",
-    queryKey: ["kg-search-grouped", searchTerm],
-    queryFn: () => searchKgGroupedNodes(supabase, reviewPassword, searchTerm, 60),
+    queryKey: ["kg-search-grouped", searchTerm, sourceFilter],
+    queryFn: () =>
+      searchKgGroupedNodes(supabase, reviewPassword, searchTerm, 60, sources),
   });
   const overviewQuery = useQuery({
     enabled: showOverview,
@@ -396,6 +408,30 @@ function KgExplorerContent() {
             placeholderTextColor="#7b8580"
             value={query}
           />
+          <View className="mt-2 flex-row flex-wrap items-center gap-2">
+            <Text className="text-xs font-semibold uppercase text-ink/50">
+              Source
+            </Text>
+            {SOURCE_FILTER_OPTIONS.map((opt) => (
+              <Chip
+                active={sourceFilter.includes(opt.value)}
+                key={opt.value}
+                onPress={() =>
+                  setSourceFilter((cur) =>
+                    cur.includes(opt.value)
+                      ? cur.filter((v) => v !== opt.value)
+                      : [...cur, opt.value]
+                  )
+                }
+                text={opt.label}
+              />
+            ))}
+            {sourceFilter.length ? (
+              <Pressable onPress={() => setSourceFilter([])}>
+                <Text className="text-xs font-semibold text-leaf">clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
           {searchTerm.length < 2 ? null : searchView === "grouped" ? (
             groupedQuery.isLoading ? (
               <ActivityIndicator className="mt-3" />

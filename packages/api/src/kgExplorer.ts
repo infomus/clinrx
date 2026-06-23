@@ -82,11 +82,13 @@ export async function searchKgExplorerNodes(
   passcode: string,
   query: string,
   limit = 20,
+  sources: string[] | null = null,
 ): Promise<KgSearchNode[]> {
   const { data, error } = await client.rpc("kg_explorer_search", {
     p_passcode: passcode,
     p_query: query,
     p_limit: limit,
+    p_sources: sources && sources.length ? sources : null,
   });
   if (error) throw error;
   return ((data as Record<string, unknown>[] | null) ?? []).map((row) => ({
@@ -184,11 +186,13 @@ export async function searchKgGroupedNodes(
   passcode: string,
   query: string,
   limit = 40,
+  sources: string[] | null = null,
 ): Promise<KgMoietyGroup[]> {
   const { data, error } = await client.rpc("kg_explorer_search_grouped", {
     p_passcode: passcode,
     p_query: query,
     p_limit: limit,
+    p_sources: sources && sources.length ? sources : null,
   });
   if (error) throw error;
   return ((data as Record<string, unknown>[] | null) ?? []).map((row) => ({
