@@ -95,6 +95,26 @@ each) — the highest-leverage manual review available.
 - API: `getPkStrengthQueue` / `gradePkStrengthEdge` in `packages/api/src/kgExplorer.ts`.
 - UI: "PK strength review — grade CYP modulators" card in
   `apps/mobile/app/review/kg.tsx` (`clinrx.ca/review/kg`).
+- The review queue covers `CPS_MONOGRAPH` / `HC_MONOGRAPH` / `PUBMED` candidate
+  modulator edges (migration `20260623170000`); `FDA_DDI` stays out (curated).
+
+### 5. PubMed CYP extraction (candidate) — emerging-drug gap
+`scripts/extract-pubmed-cyp-edges.mjs` fills the gap for drugs whose CYP roles
+are documented in the literature but not in any ingested monograph (e.g.
+cariprazine, cobicistat, the PARP inhibitors, modern azoles/oncology TKIs).
+Candidates come from `pubmed_cyp_extraction_candidate` (migration
+`20260623160000`): articles whose `pubmed_evidence_chunk` text mentions a CYP
+isoenzyme AND that are linked to an ingredient node with **no existing CYP edge**.
+Scope (2026-06-23): **3,371 candidate articles** across **2,809 gap nodes**.
+
+The article (pmid) is the unit of extraction; the same strict tool + drug→
+ingredient mapping as the monograph pass is used, so it captures both the subject
+drug and interacting drugs named in the article. Edges: `source = 'PUBMED'`,
+`review_status = 'candidate'`, `citations = [pmid]`, `properties = { strength,
+quote, pmid }`. De-duped against **all** existing CYP edges (any source) so it
+only adds genuinely new triples. Measured cost ≈ $0.031/article (Opus 4.8) →
+~$105 for the full set; ~2 new edges/article after dedup. Full run executed
+2026-06-23.
 
 ## Severity mapping (draft — pharmacist to confirm)
 
@@ -136,8 +156,9 @@ Open questions for the pharmacist (see also `PHARMACIST_REVIEW_HANDOFF.md`):
 4. **Materialize** the confirmed derived PK interactions as `interacts_with`
    edges at the moiety level (with mechanism/severity/citations) so the runtime
    checker and Smart Search consume them like any other edge.
-5. **PubMed CYP extraction** for emerging drugs with no monograph CYP text (e.g.
-   cariprazine) — same strict-tool pattern over `pubmed_*` chunks.
+5. **PubMed CYP extraction** for emerging drugs with no monograph CYP text —
+   done (see "What's built" §5); its candidate edges flow into the same review
+   queue and derivation view.
 6. **Surface PK interactions in the explorer node drawer** (a panel backed by
    `kg_explorer_pk_interactions`).
 7. **Extend the PK axis** beyond CYP: transporters (P-gp/BCRP), UGT — new
@@ -154,4 +175,6 @@ set -a; source .env; set +a
 SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL node scripts/seed-pk-cyp-edges.mjs
 # strict LLM extraction (needs ANTHROPIC_API_KEY); --dry-run / --limit N / --verbose supported
 SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL node scripts/extract-monograph-cyp-edges.mjs --concurrency 5
+# PubMed gap fill (reads pubmed_cyp_extraction_candidate; migration 20260623160000 builds it)
+SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL node scripts/extract-pubmed-cyp-edges.mjs --concurrency 5
 ```
