@@ -112,9 +112,18 @@ ingredient mapping as the monograph pass is used, so it captures both the subjec
 drug and interacting drugs named in the article. Edges: `source = 'PUBMED'`,
 `review_status = 'candidate'`, `citations = [pmid]`, `properties = { strength,
 quote, pmid }`. De-duped against **all** existing CYP edges (any source) so it
-only adds genuinely new triples. Measured cost ≈ $0.031/article (Opus 4.8) →
-~$105 for the full set; ~2 new edges/article after dedup. Full run executed
-2026-06-23.
+only adds genuinely new triples.
+
+Full run (2026-06-24): 3,371 articles, 12,994 relations, **1,645 new edges**
+(849 `metabolized_by` + 595 `inhibits_enzyme` + 201 `induces_enzyme`), 7,184
+dupes, 4,165 unmapped (classes / metabolites / herbals / experimental
+compounds), 0 errors, $108.55. Effect: ingredient CYP coverage **272 → 744
+drugs**; derived PK interactions **17,510 → 243,387** (the combinatorial growth
+from the new modulator × shared-enzyme-substrate pairs — most are minor/
+unspecified, which is why review + severity gating matter). PubMed is noisier
+than monographs (in-vitro findings, salt/excipient name artifacts), so the
+strength-review queue's **reject** control matters here; the queue is now ~555
+unspecified modulator edges (was 127).
 
 ## Severity mapping (draft — pharmacist to confirm)
 
