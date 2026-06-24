@@ -1,5 +1,11 @@
 # Knowledge Graph consolidation plan
 
+> **Related:** this doc covers consolidating the **node spine** (deduplicating
+> ingredients/classes across sources). The **relationship/interaction layer** that
+> rides on that spine is tracked separately in **`PK_INTERACTION_LAYER.md`** — the
+> pharmacokinetic (CYP) axis is already being built (mechanism edges + derived
+> interactions) at the ingredient/moiety level the consolidation produces.
+
 ## Why
 The KG fragments the same real-world drug into many nodes across sources and
 granularities, and they are not reconciled. Measured state (2026-06-18):

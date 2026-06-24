@@ -227,14 +227,16 @@ export async function searchKgGroupedNodes(
     nSources: Number(row.n_sources ?? 0),
     sources: (row.sources as string[] | null) ?? [],
     totalDegree: Number(row.total_degree ?? 0),
-    members: ((row.members as Record<string, unknown>[] | null) ?? []).map((m) => ({
-      id: m.id as string,
-      name: m.name as string,
-      type: m.type as KgNodeType,
-      source: m.source as string,
-      degree: Number(m.degree ?? 0),
-      chunks: (m.chunks as Record<string, number>) ?? {},
-    })),
+    members: ((row.members as Record<string, unknown>[] | null) ?? []).map(
+      (m) => ({
+        id: m.id as string,
+        name: m.name as string,
+        type: m.type as KgNodeType,
+        source: m.source as string,
+        degree: Number(m.degree ?? 0),
+        chunks: (m.chunks as Record<string, number>) ?? {},
+      }),
+    ),
   }));
 }
 
@@ -327,15 +329,113 @@ export async function getKgNodeChunks(
   const row = (data as Record<string, unknown> | null) ?? {};
   return {
     total: Number(row.total ?? 0),
-    chunks: ((row.chunks as Record<string, unknown>[] | null) ?? []).map((c) => ({
-      layer: (c.layer as "monograph" | "pubmed") ?? "monograph",
-      kind: c.kind as string,
-      section: (c.section as string | null) ?? null,
-      sourceType: (c.source_type as string | null) ?? null,
-      pmid: (c.pmid as string | null) ?? null,
-      url: (c.url as string | null) ?? null,
-      content: (c.content as string) ?? "",
+    chunks: ((row.chunks as Record<string, unknown>[] | null) ?? []).map(
+      (c) => ({
+        layer: (c.layer as "monograph" | "pubmed") ?? "monograph",
+        kind: c.kind as string,
+        section: (c.section as string | null) ?? null,
+        sourceType: (c.source_type as string | null) ?? null,
+        pmid: (c.pmid as string | null) ?? null,
+        url: (c.url as string | null) ?? null,
+        content: (c.content as string) ?? "",
+      }),
+    ),
+  };
+}
+
+export interface PkStrengthEdge {
+  id: string;
+  relation: "inhibits_enzyme" | "induces_enzyme";
+  source: string;
+  sourceId: string;
+  targetId: string;
+  strength: string;
+  quote: string | null;
+  extractionConfidence: number | null;
+  reviewStatus: EdgeReviewStatus;
+  citations: unknown;
+  modulatorName: string;
+  modulatorType: KgNodeType;
+  enzymeName: string;
+  substrateCount: number;
+}
+
+export interface PkStrengthQueue {
+  total: number;
+  items: PkStrengthEdge[];
+}
+
+export async function getPkStrengthQueue(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  options: {
+    relation?: "inhibits_enzyme" | "induces_enzyme" | null;
+    onlyUnspecified?: boolean;
+    status?: EdgeReviewStatus | null;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<PkStrengthQueue> {
+  const { data, error } = await client.rpc("kg_explorer_pk_strength_queue", {
+    p_passcode: passcode,
+    p_relation: options.relation ?? null,
+    p_only_unspecified: options.onlyUnspecified ?? true,
+    p_status: options.status ?? "candidate",
+    p_limit: options.limit ?? 50,
+    p_offset: options.offset ?? 0,
+  });
+  if (error) throw error;
+  const row = (data as Record<string, unknown> | null) ?? {};
+  return {
+    total: Number(row.total ?? 0),
+    items: ((row.items as Record<string, unknown>[] | null) ?? []).map((e) => ({
+      id: e.id as string,
+      relation: e.relation as "inhibits_enzyme" | "induces_enzyme",
+      source: e.source as string,
+      sourceId: e.source_id as string,
+      targetId: e.target_id as string,
+      strength: (e.strength as string) ?? "unspecified",
+      quote: (e.quote as string | null) ?? null,
+      extractionConfidence:
+        e.extraction_confidence === null ||
+        e.extraction_confidence === undefined
+          ? null
+          : Number(e.extraction_confidence),
+      reviewStatus: e.review_status as EdgeReviewStatus,
+      citations: e.citations,
+      modulatorName: e.modulator_name as string,
+      modulatorType: e.modulator_type as KgNodeType,
+      enzymeName: e.enzyme_name as string,
+      substrateCount: Number(e.substrate_count ?? 0),
     })),
+  };
+}
+
+export async function gradePkStrengthEdge(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  edgeId: string,
+  action: "grade" | "reject" | "reset",
+  strength: "strong" | "moderate" | "weak" | null = null,
+  reviewer: string | null = null,
+): Promise<{
+  id: string;
+  strength: string | null;
+  reviewStatus: EdgeReviewStatus;
+}> {
+  const { data, error } = await client.rpc("kg_explorer_grade_pk_edge", {
+    p_passcode: passcode,
+    p_edge_id: edgeId,
+    p_action: action,
+    p_strength: strength,
+    p_reviewer: reviewer,
+  });
+  if (error) throw error;
+  const row = (data as Record<string, unknown> | null) ?? {};
+  return {
+    id: row.id as string,
+    strength: (row.strength as string | null) ?? null,
+    reviewStatus: row.review_status as EdgeReviewStatus,
   };
 }
 
@@ -370,10 +470,11 @@ export async function getKgExplorerEdges(
       relation: e.relation as KgRelation,
       severity: (e.severity as InteractionSeverity | null) ?? null,
       evidenceLevel: (e.evidence_level as string | null) ?? null,
-      extractionConfidence: e.extraction_confidence === null ||
-          e.extraction_confidence === undefined
-        ? null
-        : Number(e.extraction_confidence),
+      extractionConfidence:
+        e.extraction_confidence === null ||
+        e.extraction_confidence === undefined
+          ? null
+          : Number(e.extraction_confidence),
       reviewStatus: e.review_status as EdgeReviewStatus,
       citations: e.citations,
       source: e.source as string,

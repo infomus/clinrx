@@ -1,5 +1,7 @@
 # Pharmacist Review Role for ClinRx
 
+> **Note (2026-06-17):** This document is the conceptual handoff (purpose, standards, decision taxonomy). For a step-by-step guide to actually navigating the review screen, see **`docs/CALIBRATION_REVIEW_GUIDE.md`**. The "Current Status" section below is stale (2026-06-11) and describes the older 80-request set `interaction-runtime-calibration-2026-06-11`; the live calibration set is now `interaction-runtime-kg-node-calibration-2026-06-14` (50 requests, 5 models × 4 strategies, accessible at `clinrx.ca/review/calibration/`).
+
 We are building a Canadian pharmacy study app with CPS-backed smart search and a drug interaction checker. CPS monographs are loaded server-side, CPS DPD product listings are fully loaded, Health Canada DPD/NOC/Summary Reports/product monograph context is ingested, and the interaction review workflow is being calibrated around a monograph-first evidence standard.
 
 This document is the session guide for a pharmacist/co-founder review walkthrough.
@@ -162,6 +164,39 @@ Common rejection reasons:
 
 This means your reviews improve both the knowledge graph and the extraction pipeline over time.
 
+## PK (CYP) interaction layer — strength review (new, 2026-06-23)
+
+Separate from the PubMed-candidate workflow above, we now derive **pharmacokinetic
+(CYP enzyme) interactions** mechanistically: a drug is a *substrate*, *inhibitor*,
+or *inducer* of a CYP enzyme, and any inhibitor/inducer of an enzyme paired with
+any substrate of it is a candidate interaction (computed, not authored). These
+mechanism facts come from the curated FDA table (trusted) plus strict AI
+extraction over monograph Clinical Pharmacology / Drug Interactions sections
+(each fact carries a verbatim quote — candidate, needs review). This already
+derives ~17,500 PK interaction pairs. Full design: `docs/PK_INTERACTION_LAYER.md`.
+
+There is now a **"PK strength review"** card in the KG explorer
+(`clinrx.ca/review/kg`). It lists the AI-extracted inhibitor/inducer edges whose
+*strength* the monograph didn't state, **highest-leverage first** — each one sets
+the severity of every interaction with a substrate of that enzyme (the top edges
+each drive ~140 interactions). For each, you see the modulator → enzyme, the
+source quote, and grade it **strong / moderate / weak** (or **reject** a bad
+extraction). Grading ~127 of these edges sets the severity for ~8,900 derived
+interactions — the single highest-value manual review in this layer.
+
+Two distinct jobs here, both needed (not redundant):
+
+1. **Confirm the severity-mapping rule** (one policy decision): currently strong
+   modulator → major, moderate → moderate, weak/unspecified → minor. This ignores
+   how dependent the victim drug is on the enzyme and its therapeutic index. Key
+   sub-decision: what should an *unspecified* strength default to — `minor`
+   (current), or more conservatively `moderate`/`unknown` so "magnitude unknown"
+   never reads as "low risk"? Should strong inhibitor × sensitive substrate be
+   `contraindicated`?
+2. **Grade the unspecified modulator strengths** in the review card (supplies the
+   inputs the rule consumes). The mapping decision sets *how urgent* this is; the
+   grading *removes* edges from the default.
+
 ## Current Status
 
 Current status as of 2026-06-11:
@@ -256,3 +291,4 @@ Do not publish candidates only because the AI marked them likely publishable. A 
 - Which rejection reasons are missing or unclear.
 - Whether a `needs monograph comparison` follow-up bucket is enough, or whether more specific follow-up states are needed.
 - Whether candidate resolution is at the right clinical level: ingredient, class, or product.
+- **PK severity-mapping rule** (CYP layer): how modulator strength — and, optionally, substrate sensitivity and therapeutic index — map to severity; the default for `unspecified` strength; whether strong inhibitor × sensitive substrate is `contraindicated`.
