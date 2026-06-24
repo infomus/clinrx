@@ -54,6 +54,10 @@ Everything is provenance-preserving and reversible (the crosswalk records the me
 - **4 — Bake normalization into ingestion** so new DPD/CPS/NOC rows attach to canonical nodes at load; promote the 907 PubMed candidates to `interacts_with` **at the moiety level** only after the spine is clean.
 - **5 — Re-point runtime resolution** to the canonical moiety; re-validate on the interaction calibration set.
 
+## Progress
+- **2026-06-18** — Phase 2 (matched-crosswalk small clusters) merged (migration `20260618232000`).
+- **2026-06-24** — **Interaction-bearing consolidation** (the prioritized high-value spine): merged the duplicate clusters of every ingredient that carries an interaction/PK edge, PubMed candidate, or calibration eval (`scripts/build-interaction-merge-map.mjs` → migration `20260624140000`). 678 clusters → **1,244 losers absorbed** (incl. 793 non-leaf NOC ingredient nodes — the "later" handling for those). Ingredient nodes 9,274 → 8,030. **PK-substance fragmentation 88% → 2%** (the retrieval-miss risk for interaction drugs is essentially eliminated). Minerals/vitamins deferred, combination members excluded, ATC-conflict clusters skipped for review. The long tail (non-interaction-bearing duplicates) is deferred.
+
 ## Acceptance criteria
 - One canonical ingredient node per moiety; no interaction edges on products.
 - Chunks / PubMed links / candidates all resolve to canonical nodes (zero orphans).
