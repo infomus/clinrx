@@ -372,6 +372,7 @@ export async function getPkStrengthQueue(
     relation?: "inhibits_enzyme" | "induces_enzyme" | null;
     onlyUnspecified?: boolean;
     status?: EdgeReviewStatus | null;
+    sources?: string[] | null;
     limit?: number;
     offset?: number;
   } = {},
@@ -381,6 +382,8 @@ export async function getPkStrengthQueue(
     p_relation: options.relation ?? null,
     p_only_unspecified: options.onlyUnspecified ?? true,
     p_status: options.status ?? "candidate",
+    p_sources:
+      options.sources && options.sources.length ? options.sources : null,
     p_limit: options.limit ?? 50,
     p_offset: options.offset ?? 0,
   });

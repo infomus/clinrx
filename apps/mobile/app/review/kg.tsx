@@ -1182,17 +1182,28 @@ function PkStrengthReview({
     "inhibits_enzyme" | "induces_enzyme" | null
   >(null);
   const [onlyUnspecified, setOnlyUnspecified] = useState(true);
+  const [sourceMode, setSourceMode] = useState<"all" | "monograph" | "pubmed">(
+    "all",
+  );
   const [processed, setProcessed] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
 
+  const sources =
+    sourceMode === "monograph"
+      ? ["CPS_MONOGRAPH", "HC_MONOGRAPH"]
+      : sourceMode === "pubmed"
+        ? ["PUBMED"]
+        : null;
+
   const queue = useQuery({
     enabled: open,
-    queryKey: ["pk-strength-queue", relation, onlyUnspecified],
+    queryKey: ["pk-strength-queue", relation, onlyUnspecified, sourceMode],
     queryFn: () =>
       getPkStrengthQueue(supabase, reviewPassword, {
         relation,
         onlyUnspecified,
+        sources,
         status: "candidate",
         limit: 50,
       }),
@@ -1279,6 +1290,22 @@ function PkStrengthReview({
               active={onlyUnspecified}
               onPress={() => setOnlyUnspecified((v) => !v)}
               text="Only unspecified"
+            />
+            <Text className="px-1 text-xs text-ink/30">|</Text>
+            <Chip
+              active={sourceMode === "all"}
+              onPress={() => setSourceMode("all")}
+              text="All sources"
+            />
+            <Chip
+              active={sourceMode === "monograph"}
+              onPress={() => setSourceMode("monograph")}
+              text="Monographs"
+            />
+            <Chip
+              active={sourceMode === "pubmed"}
+              onPress={() => setSourceMode("pubmed")}
+              text="PubMed"
             />
             <Pressable
               className="rounded-md border border-ink/15 px-2 py-1.5"
