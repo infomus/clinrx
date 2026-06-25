@@ -103,7 +103,11 @@ async function profile(name, text, attempt = 0) {
   const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "anthropic-version": "2023-06-01", "content-type": "application/json", "x-api-key": anthropicKey }, body: JSON.stringify(body) });
   if (!r.ok) {
     const t = await r.text();
-    if ((r.status === 429 || r.status >= 500) && attempt < 5) { await new Promise((res) => setTimeout(res, Math.min(2000 * 2 ** attempt, 30000))); return profile(name, text, attempt + 1); }
+    const isCredit = r.status === 400 && /credit balance/i.test(t); // transient with auto top-up
+    if ((r.status === 429 || r.status >= 500 || isCredit) && attempt < 8) {
+      await new Promise((res) => setTimeout(res, isCredit ? 45000 : Math.min(2000 * 2 ** attempt, 30000)));
+      return profile(name, text, attempt + 1);
+    }
     throw new Error(`Anthropic ${r.status}: ${t.slice(0, 200)}`);
   }
   const json = await r.json();
