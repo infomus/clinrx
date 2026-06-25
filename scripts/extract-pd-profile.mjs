@@ -134,13 +134,15 @@ async function main() {
   const ids = cands.map((c) => c.node_id);
   const nameOf = {};
   for (let i = 0; i < ids.length; i += 150) for (const n of await rest(`kg_node?id=in.(${ids.slice(i, i + 150).join(",")})&select=id,canonical_name`)) nameOf[n.id] = n.canonical_name;
-  let targets = ids.filter((id) => nameOf[id]);
+  const processedSet = DRY_RUN ? new Set() : new Set((await restPage("pd_processed?select=node_id")).map((p) => p.node_id));
+  let targets = ids.filter((id) => nameOf[id] && !processedSet.has(id));
   if (LIMIT !== Infinity) targets = targets.slice(0, LIMIT);
-  console.log(`PD candidate substances: ${targets.length}${DRY_RUN ? " (dry-run)" : ""}`);
+  console.log(`PD candidate substances to process: ${targets.length} (skipped ${processedSet.size} already done)${DRY_RUN ? " (dry-run)" : ""}`);
   const axisNode = await ensureAxisNodes();
   const existingEdges = new Set((await restPage("kg_edge?source=eq.PD_LAYER&relation=eq.subclass_of&select=source_id,target_id")).map((e) => `${e.source_id}|${e.target_id}`));
 
   const edges = [];
+  const processedOk = [];
   const stats = { drugs: 0, contributions: 0, byAxis: {}, errors: 0, inTok: 0, outTok: 0 };
   let done = 0;
 
@@ -169,6 +171,7 @@ async function main() {
     catch (e) { stats.errors++; console.error(`  ! ${nameOf[nodeId]}: ${e.message}`); done++; return; }
     if (usage) { stats.inTok += (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0); stats.outTok += usage.output_tokens || 0; }
     stats.drugs++;
+    processedOk.push(nodeId);
     const seenAxis = new Set();
     for (const c of res || []) {
       if (!AXES[c.axis] || seenAxis.has(c.axis)) continue;
@@ -195,7 +198,11 @@ async function main() {
     const r = await fetch(`${url}/rest/v1/kg_edge`, { method: "POST", headers: { ...H, Prefer: "return=minimal" }, body: JSON.stringify(edges.slice(i, i + 200)) });
     if (!r.ok) throw new Error(`edge insert ${r.status}: ${(await r.text()).slice(0, 200)}`);
   }
-  console.log(`inserted ${edges.length} PD class-membership edges`);
+  // record processed drugs (success or empty) so a re-run skips them
+  for (let i = 0; i < processedOk.length; i += 500) {
+    await fetch(`${url}/rest/v1/pd_processed`, { method: "POST", headers: { ...H, Prefer: "return=minimal,resolution=ignore-duplicates" }, body: JSON.stringify(processedOk.slice(i, i + 500).map((id) => ({ node_id: id }))) });
+  }
+  console.log(`inserted ${edges.length} PD class-membership edges; recorded ${processedOk.length} processed`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
