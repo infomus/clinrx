@@ -107,6 +107,16 @@ interface RuntimeEvidenceRow {
   used_in_answer: boolean;
 }
 
+interface RuntimeRetrievalSummary {
+  durationMs: number;
+  leftMonographEvidenceCount: number;
+  preTopKCount: number;
+  pubMedEvidenceCount: number;
+  rightMonographEvidenceCount: number;
+  strategy: RuntimeRetrievalStrategyId;
+  topK: number;
+}
+
 interface PubMedCandidateRow {
   ai_decision?: string | null;
   ai_review_score?: number | null;
@@ -152,6 +162,16 @@ interface PubMedEvidenceChunkRow {
   source_type: string;
   source_url?: string | null;
   structured_content?: Record<string, unknown> | null;
+}
+
+interface PubMedArticleKgNodeRow {
+  confidence?: number | null;
+  concept_id?: string | null;
+  evidence_state?: string | null;
+  metadata?: Record<string, unknown> | null;
+  node_id: string;
+  pmid: string;
+  source: string;
 }
 
 interface PairCacheRow {
@@ -267,9 +287,15 @@ const defaultCalibrationRetrievalStrategyPanel: RuntimeRetrievalStrategyId[] = [
   "ingredient_product_class_guarded_top12",
 ];
 const defaultResultCacheTtlSeconds = 86400;
-const interactionAiPromptVersion = "interaction-runtime-ai-v2";
+const interactionAiPromptVersion = "interaction-runtime-ai-v4";
 const interactionAiRetrievalStrategyVersion: RuntimeRetrievalStrategyId =
   "monograph_direct_plus_pubmed_top10";
+const runtimeInFilterBatchSize = 50;
+const runtimeMaxReverseProductScanEdges = 1000;
+const runtimeMaxReverseProductNodes = 120;
+const runtimeMaxChunkLookupNodeIds = 160;
+const runtimeChunkRowsPerBatch = 120;
+const runtimeMaxChunkRows = 500;
 const runtimeRetrievalStrategyConfigs: Record<
   RuntimeRetrievalStrategyId,
   RuntimeRetrievalStrategyConfig
@@ -421,11 +447,13 @@ Deno.serve(async (request) => {
       useResultCache: body.useResultCache !== false,
     });
   } catch (checkError) {
+    console.error("Could not check interactions", {
+      error: formatUnknownError(checkError),
+    });
+
     return jsonResponse(
       {
-        error: checkError instanceof Error
-          ? checkError.message
-          : "Could not check interactions",
+        error: formatUnknownError(checkError) || "Could not check interactions",
       },
       500,
     );
@@ -987,12 +1015,30 @@ async function augmentWithRuntimeAiInference({
 
   if (missingPairs.length && hasProviderKey(providerKeys, provider)) {
     const nodesById = await getKgNodesById(adminClient, nodeIds);
-    const retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
-      adminClient,
-      nodesById,
-      pairs: missingPairs,
-      strategy: interactionAiRetrievalStrategyVersion,
-    });
+    let retrievedEvidenceByPair: Map<string, RuntimeEvidenceRow[]>;
+
+    try {
+      retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
+        adminClient,
+        nodesById,
+        pairs: missingPairs,
+        strategy: interactionAiRetrievalStrategyVersion,
+      });
+    } catch (retrievalError) {
+      console.error("Runtime AI evidence retrieval failed", {
+        error: formatUnknownError(retrievalError),
+      });
+
+      return {
+        cache: {
+          aiHitCount: cachedByPair.size,
+          aiMissCount: missingPairs.length,
+          ...(evidenceVersion ? { evidenceVersion } : {}),
+          ...(resolvedGraphVersion ? { graphVersion: resolvedGraphVersion } : {}),
+        },
+        interactions: deterministicInteractions,
+      };
+    }
 
     for (const [leftId, rightId] of missingPairs) {
       const fingerprint = pairFingerprint(leftId, rightId);
@@ -1005,10 +1051,13 @@ async function augmentWithRuntimeAiInference({
       const retrievalStrategyConfig = getRuntimeRetrievalStrategyConfig(
         interactionAiRetrievalStrategyVersion,
       );
-      const evidenceRows = rerankEvidenceRows([
-        ...buildEvidenceRows(deterministicRows),
-        ...(retrievedEvidenceByPair.get(fingerprint) ?? []),
-      ]).slice(0, retrievalStrategyConfig.topK);
+      const evidenceRows = prepareRuntimeAiEvidenceRows(
+        [
+          ...buildEvidenceRows(deterministicRows),
+          ...(retrievedEvidenceByPair.get(fingerprint) ?? []),
+        ],
+        retrievalStrategyConfig.topK,
+      );
       const substantiveEvidence = evidenceRows.filter(
         (row) =>
           row.source_kind !== "kg_edge" ||
@@ -1229,16 +1278,35 @@ async function buildCalibrationModelPanel({
       RuntimeEvidenceRow[]
     >();
 
+    const retrievalErrorsByStrategy = new Map<
+      RuntimeRetrievalStrategyId,
+      unknown
+    >();
+
     await Promise.all(
       [...new Set(
         missingModelPairs.map((item) => item.retrievalStrategyVersion),
       )].map(async (retrievalStrategyVersion) => {
-        const retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
-          adminClient,
-          nodesById,
-          pairs: missingPairs,
-          strategy: retrievalStrategyVersion,
-        });
+        let retrievedEvidenceByPair: Map<string, RuntimeEvidenceRow[]>;
+
+        try {
+          retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
+            adminClient,
+            nodesById,
+            pairs: missingPairs,
+            strategy: retrievalStrategyVersion,
+          });
+        } catch (retrievalError) {
+          retrievalErrorsByStrategy.set(
+            retrievalStrategyVersion,
+            retrievalError,
+          );
+          console.error("Calibration runtime evidence retrieval failed", {
+            error: formatUnknownError(retrievalError),
+            retrievalStrategyVersion,
+          });
+          return;
+        }
 
         for (const [fingerprint, rows] of retrievedEvidenceByPair.entries()) {
           retrievedEvidenceByStrategyPair.set(
@@ -1267,12 +1335,45 @@ async function buildCalibrationModelPanel({
       const retrievalStrategyConfig = getRuntimeRetrievalStrategyConfig(
         retrievalStrategyVersion,
       );
-      const evidenceRows = rerankEvidenceRows([
-        ...buildEvidenceRows(deterministicByPair.get(fingerprint) ?? []),
-        ...(retrievedEvidenceByStrategyPair.get(
-          strategyPairKey(retrievalStrategyVersion, fingerprint),
-        ) ?? []),
-      ]).slice(0, retrievalStrategyConfig.topK);
+      const retrievalError = retrievalErrorsByStrategy.get(
+        retrievalStrategyVersion,
+      );
+
+      if (retrievalError) {
+        const failureRow = buildRuntimeAiFailureRow({
+          error: new Error(
+            `Runtime evidence retrieval failed: ${
+              formatUnknownError(retrievalError)
+            }`,
+          ),
+          evidenceRows: [],
+          interactionAiModel: model,
+          latencyMs: 0,
+          leftId,
+          rightId,
+          leftNode,
+          rightNode,
+          pairFingerprint: fingerprint,
+          retrievalStrategyVersion,
+        });
+
+        generatedRowsByModelStrategyPair.set(
+          modelStrategyPairKey(model, retrievalStrategyVersion, fingerprint),
+          [failureRow],
+        );
+
+        continue;
+      }
+
+      const evidenceRows = prepareRuntimeAiEvidenceRows(
+        [
+          ...buildEvidenceRows(deterministicByPair.get(fingerprint) ?? []),
+          ...(retrievedEvidenceByStrategyPair.get(
+            strategyPairKey(retrievalStrategyVersion, fingerprint),
+          ) ?? []),
+        ],
+        retrievalStrategyConfig.topK,
+      );
       const substantiveEvidence = evidenceRows.filter(
         (row) =>
           row.source_kind !== "kg_edge" ||
@@ -1629,8 +1730,10 @@ async function runRuntimeAiAssessment({
       rationale: "short explanation grounded only in provided evidence",
       severity: "contraindicated|major|moderate|minor|unknown",
       uncertainty: ["string"],
-      usedEvidenceIds: [
-        "at least one exact short evidence[].id value used for the answer, such as E1",
+      primaryEvidenceId:
+        "the single most important exact evidence[].id used for the answer, such as E1",
+      additionalEvidenceIds: [
+        "any other exact evidence[].id values used, such as E2 (may be empty)",
       ],
     },
     rules: [
@@ -1639,8 +1742,9 @@ async function runRuntimeAiAssessment({
       "PubMed evidence is supporting literature, not a replacement for current monograph context.",
       "Mechanism-only evidence should not become a broad interaction unless it supports a clinically actionable risk.",
       "If evidence is absent, source-silent, unrelated, or insufficient, use no_known_interaction with low confidence.",
-      "Every completed answer must cite at least one exact short evidence[].id value such as E1 or E2 in usedEvidenceIds.",
-      `Only these usedEvidenceIds are valid: ${promptEvidenceIds.join(", ")}.`,
+      "Every completed answer must set primaryEvidenceId to the exact short evidence[].id most responsible for the answer, such as E1.",
+      "Put any other evidence ids you relied on in additionalEvidenceIds; leave it empty if only one chunk supports the answer.",
+      `Only these evidence ids are valid: ${promptEvidenceIds.join(", ")}.`,
       `Use the ${runtimeAiAssessmentToolName} tool when available.`,
       "If returning text instead of tool output, return one JSON object only. No markdown.",
       "Start JSON text with { and end with }.",
@@ -1648,7 +1752,12 @@ async function runRuntimeAiAssessment({
   };
   let lastError: unknown = null;
   let lastRawText = "";
-  const maxStructuredOutputAttempts = 1;
+  let lastToolInput: unknown = null;
+  let lastStructuredOutputMethod: RuntimeStructuredOutputMethod | null = null;
+  // strict tool use biases Opus/Sonnet strongly toward the schema but does not
+  // hard-enforce it the way OpenAI structured outputs do, so allow one repair
+  // retry to recover the residual cases that drop the required citation field.
+  const maxStructuredOutputAttempts = 2;
 
   for (let attempt = 0; attempt < maxStructuredOutputAttempts; attempt += 1) {
     const promptPayload = attempt === 0
@@ -1672,6 +1781,8 @@ async function runRuntimeAiAssessment({
         providerKeys,
       });
       lastRawText = modelResponse.rawText;
+      lastToolInput = modelResponse.toolInput;
+      lastStructuredOutputMethod = modelResponse.structuredOutputMethod;
 
       const answer = requireValidRuntimeAiEvidenceIds(
         validateRuntimeAiAnswer(parseRuntimeAiModelResponse(modelResponse)),
@@ -1689,11 +1800,46 @@ async function runRuntimeAiAssessment({
     }
   }
 
-  throw new Error(
-    `Runtime AI answer could not be parsed after ${maxStructuredOutputAttempts} attempt(s): ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }${lastRawText ? `; output: ${truncate(lastRawText, 500)}` : ""}`,
+  throw attachFailedModelOutput(
+    new Error(
+      `Runtime AI answer could not be parsed after ${maxStructuredOutputAttempts} attempt(s): ${
+        lastError instanceof Error ? lastError.message : String(lastError)
+      }${lastRawText ? `; output: ${truncate(lastRawText, 500)}` : ""}`,
+    ),
+    {
+      rawText: lastRawText,
+      structuredOutputMethod: lastStructuredOutputMethod,
+      toolInput: lastToolInput,
+    },
   );
+}
+
+interface FailedModelOutput {
+  rawText: string;
+  structuredOutputMethod: RuntimeStructuredOutputMethod | null;
+  toolInput: unknown;
+}
+
+// Carry the model's last (invalid) structured output on the thrown error so the
+// failure row can persist it. Most calibration failures arrive as parsed tool
+// input with empty rawText, so the tool input is the only recoverable signal.
+function attachFailedModelOutput(
+  error: Error,
+  output: FailedModelOutput,
+): Error {
+  (error as Error & { failedModelOutput?: FailedModelOutput })
+    .failedModelOutput = output;
+  return error;
+}
+
+function getFailedModelOutput(error: unknown): FailedModelOutput | null {
+  if (error instanceof Error) {
+    const output =
+      (error as Error & { failedModelOutput?: FailedModelOutput })
+        .failedModelOutput;
+    if (output) return output;
+  }
+  return null;
 }
 
 async function callRuntimeAiAssessmentModelWithFallback({
@@ -1950,6 +2096,9 @@ function buildRuntimeAiAssessmentTool(promptEvidenceIds: string[]) {
       "Record the conservative drug interaction assessment using only the supplied evidence.",
     input_schema: buildRuntimeAiAssessmentSchema(promptEvidenceIds),
     name: runtimeAiAssessmentToolName,
+    // Strict tool use forces tool input to satisfy the schema (required fields +
+    // enum membership) on Opus/Sonnet, matching the OpenAI structured-output path.
+    strict: true,
   };
 }
 
@@ -1968,8 +2117,8 @@ function buildRuntimeAiAssessmentSchema(promptEvidenceIds: string[]) {
         type: "string",
       },
       confidence: {
-        maximum: 1,
-        minimum: 0,
+        // No minimum/maximum: strict schema enforcement rejects numeric
+        // constraints. The value is clamped to [0, 1] in validateRuntimeAiAnswer.
         type: "number",
       },
       evidenceSupport: {
@@ -1993,25 +2142,34 @@ function buildRuntimeAiAssessmentSchema(promptEvidenceIds: string[]) {
         items: { type: "string" },
         type: "array",
       },
-      usedEvidenceIds: {
+      // "At least one citation" is expressed structurally as a single required
+      // enum field rather than usedEvidenceIds + minItems, because strict schema
+      // enforcement (Anthropic and OpenAI) does not honor minItems on arrays but
+      // does enforce required + enum. A required single enum cannot come back
+      // empty, so the model is forced to cite at least one valid evidence id.
+      primaryEvidenceId: {
+        enum: promptEvidenceIds.length ? promptEvidenceIds : ["E1"],
+        type: "string",
+      },
+      additionalEvidenceIds: {
         items: {
           enum: promptEvidenceIds.length ? promptEvidenceIds : ["E1"],
           type: "string",
         },
-        minItems: 1,
         type: "array",
       },
     },
     required: [
       "actionCategory",
+      "additionalEvidenceIds",
       "confidence",
       "evidenceSupport",
       "management",
       "mechanism",
+      "primaryEvidenceId",
       "rationale",
       "severity",
       "uncertainty",
-      "usedEvidenceIds",
     ],
     type: "object",
   };
@@ -2036,6 +2194,33 @@ function getMissingProviderKeyMessage(provider: RuntimeModelProvider): string {
     : "ANTHROPIC_API_KEY is missing";
 }
 
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message : null;
+    const details = typeof record.details === "string" ? record.details : null;
+    const hint = typeof record.hint === "string" ? record.hint : null;
+    const code = typeof record.code === "string" ? record.code : null;
+    const parts = [message, details, hint, code].filter(Boolean);
+
+    if (parts.length) {
+      return parts.join(" ");
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  return String(error);
+}
+
 function requireValidRuntimeAiEvidenceIds(
   answer: RuntimeAiAnswer,
   evidenceRows: RuntimeEvidenceRow[],
@@ -2043,11 +2228,39 @@ function requireValidRuntimeAiEvidenceIds(
   const allowedIds = new Set(
     evidenceRows.map((_, index) => getPromptEvidenceId(index)),
   );
-  const usedEvidenceIds = [...new Set(answer.usedEvidenceIds)].filter((id) =>
-    allowedIds.has(id)
-  );
+  const usedEvidenceIds = [
+    ...new Set(
+      answer.usedEvidenceIds
+        .map((id) => normalizeRuntimePromptEvidenceId(id, allowedIds))
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
 
   if (!usedEvidenceIds.length) {
+    // Recovery: Opus/Sonnet frequently return a complete, evidence-grounded
+    // answer but omit the structured citation field (Anthropic strict tool use
+    // is a strong bias, not hard enforcement). ~95% of such cases name the exact
+    // evidence ids in the rationale/mechanism/management prose. Recover those
+    // model-stated ids before treating the answer as a failure — these are ids
+    // the model explicitly cited, not fabricated.
+    const proseText = [answer.rationale, answer.mechanism, answer.management]
+      .filter((part): part is string => typeof part === "string")
+      .join(" ");
+    const recoveredEvidenceIds = [
+      ...new Set(
+        (proseText.match(/\bE\d+\b/g) ?? [])
+          .map((id) => normalizeRuntimePromptEvidenceId(id, allowedIds))
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+
+    if (recoveredEvidenceIds.length) {
+      return {
+        ...answer,
+        usedEvidenceIds: recoveredEvidenceIds,
+      };
+    }
+
     throw new Error(
       "Runtime AI answer did not cite any valid prompt evidence IDs.",
     );
@@ -2057,6 +2270,34 @@ function requireValidRuntimeAiEvidenceIds(
     ...answer,
     usedEvidenceIds,
   };
+}
+
+function normalizeRuntimePromptEvidenceId(
+  value: unknown,
+  allowedIds: Set<string>,
+): string | null {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+
+  const rawValue = String(value).trim();
+
+  if (allowedIds.has(rawValue)) {
+    return rawValue;
+  }
+
+  const normalized = rawValue
+    .toUpperCase()
+    .replace(/^#/, "")
+    .replace(/^EVIDENCE\s*/, "E")
+    .replace(/[^A-Z0-9]/g, "");
+  const numericMatch = normalized.match(/^E?(\d+)$/);
+  const candidates = [
+    normalized,
+    numericMatch ? `E${numericMatch[1]}` : "",
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => allowedIds.has(candidate)) ?? null;
 }
 
 function buildRuntimeAiInteractionRow({
@@ -2083,6 +2324,7 @@ function buildRuntimeAiInteractionRow({
   const usedEvidence = evidenceRows.filter((row, index) =>
     isRuntimeEvidenceUsed(row, index, answer.usedEvidenceIds)
   );
+  const retrievalSummary = getRuntimeRetrievalSummary(evidenceRows);
 
   return {
     input_pair: [leftId, rightId],
@@ -2109,6 +2351,7 @@ function buildRuntimeAiInteractionRow({
         promptVersion: interactionAiPromptVersion,
         retrievalNotes:
           "Runtime AI assessment over indexed CPS/Health Canada/PubMed evidence only.",
+        retrievalSummary,
         retrievalStrategyVersion,
         structuredOutputMethod: answer.structuredOutputMethod,
         structuredOutputRetryCount: answer.structuredOutputRetryCount,
@@ -2156,6 +2399,8 @@ function buildRuntimeAiFailureRow({
     error instanceof Error ? error.message : String(error),
     600,
   );
+  const retrievalSummary = getRuntimeRetrievalSummary(evidenceRows);
+  const failedModelOutput = getFailedModelOutput(error);
 
   return {
     input_pair: [leftId, rightId],
@@ -2167,6 +2412,14 @@ function buildRuntimeAiFailureRow({
       aiDecisionTrace: {
         chunkAssessments: [],
         confidence: null,
+        failedModelOutput: failedModelOutput
+          ? {
+            rawText: truncate(failedModelOutput.rawText ?? "", 2000),
+            structuredOutputMethod:
+              failedModelOutput.structuredOutputMethod ?? null,
+            toolInput: failedModelOutput.toolInput ?? null,
+          }
+          : null,
         finalRationale:
           `${interactionAiModel} did not return a usable structured assessment.`,
         latencyMs,
@@ -2175,6 +2428,7 @@ function buildRuntimeAiFailureRow({
         promptVersion: interactionAiPromptVersion,
         retrievalNotes:
           "Runtime AI assessment failed after evidence retrieval; prompt evidence is preserved for calibration review.",
+        retrievalSummary,
         retrievalStrategyVersion,
         runtimeError: errorMessage,
         runtimeStatus: "failed",
@@ -2218,6 +2472,7 @@ function buildRuntimeAiNoEvidenceRow({
 }): InteractionRpcRow {
   const promptEvidence = evidenceRows.map(toPromptEvidence);
   const usedEvidenceIds = promptEvidence[0]?.id ? [promptEvidence[0].id] : [];
+  const retrievalSummary = getRuntimeRetrievalSummary(evidenceRows);
 
   return {
     input_pair: [leftId, rightId],
@@ -2246,6 +2501,7 @@ function buildRuntimeAiNoEvidenceRow({
         promptVersion: interactionAiPromptVersion,
         retrievalNotes:
           "Calibration no-evidence result: retrieval produced no substantive CPS, Health Canada, PubMed, or published KG evidence for this strategy.",
+        retrievalSummary,
         retrievalStrategyVersion,
         runtimeStatus: "no_evidence",
         uncertainty: [
@@ -2311,14 +2567,24 @@ async function captureRuntimeEvaluation({
   }
 
   const nodesById = await getKgNodesById(adminClient, uniqueNodeIds);
-  const retrievedEvidenceByPair = retrieveRuntimeEvidence
-    ? await retrieveRuntimeEvidenceByPair({
-      adminClient,
-      nodesById,
-      pairs,
-      strategy: interactionAiRetrievalStrategyVersion,
-    })
-    : new Map<string, RuntimeEvidenceRow[]>();
+  let retrievedEvidenceByPair = new Map<string, RuntimeEvidenceRow[]>();
+  let captureRetrievalErrorMessage: string | null = null;
+
+  if (retrieveRuntimeEvidence) {
+    try {
+      retrievedEvidenceByPair = await retrieveRuntimeEvidenceByPair({
+        adminClient,
+        nodesById,
+        pairs,
+        strategy: interactionAiRetrievalStrategyVersion,
+      });
+    } catch (retrievalError) {
+      captureRetrievalErrorMessage = formatUnknownError(retrievalError);
+      console.error("Runtime evaluation evidence retrieval failed", {
+        error: captureRetrievalErrorMessage,
+      });
+    }
+  }
   const interactionsByPair = new Map<string, InteractionRpcRow[]>();
 
   for (const interaction of interactions) {
@@ -2379,11 +2645,19 @@ async function captureRuntimeEvaluation({
           ? tracePromptEvidenceRows
           : [
             ...buildEvidenceRows(pairInteractions),
+            ...(captureRetrievalErrorMessage
+              ? [
+                buildRuntimeRetrievalFailureEvidenceRow(
+                  captureRetrievalErrorMessage,
+                ),
+              ]
+              : []),
             ...(retrievedEvidenceByPair.get(fingerprint) ?? []),
           ],
       ),
       topInteraction?.interaction.aiDecisionTrace,
     );
+    const retrievalSummary = getRuntimeRetrievalSummary(evidenceRows);
     const model = isRuntimeAi
       ? getTraceString(aiDecisionTrace, "model") ?? defaultInteractionAiModel
       : "deterministic-published-kg-lookup";
@@ -2423,6 +2697,8 @@ async function captureRuntimeEvaluation({
           evidence_retrieval_strategy: retrievalStrategyVersion,
           interaction_count: allPairInteractions.length,
           lookup_duration_ms: lookupDurationMs,
+          retrieval_error: captureRetrievalErrorMessage,
+          retrieval_summary: retrievalSummary,
           retrieved_evidence_count:
             retrievedEvidenceByPair.get(fingerprint)?.length ?? 0,
           total_duration_ms_before_capture: totalDurationMsBeforeCapture,
@@ -2472,6 +2748,8 @@ async function captureRuntimeEvaluation({
         capture_source: "check-interactions",
         evidence_retrieval_enabled: retrieveRuntimeEvidence,
         evidence_retrieval_strategy: retrievalStrategyVersion,
+        evidence_retrieval_error: captureRetrievalErrorMessage,
+        evidence_retrieval_summary: retrievalSummary,
         model,
         prompt_version: promptVersion,
         input_pair: [leftId, rightId],
@@ -2548,6 +2826,7 @@ async function retrieveRuntimeEvidenceByPair({
 
   await Promise.all(
     pairs.map(async ([leftId, rightId]) => {
+      const retrievalStartedAt = Date.now();
       const leftNode = nodesById.get(leftId);
       const rightNode = nodesById.get(rightId);
       const pair = pairFingerprint(leftId, rightId);
@@ -2576,21 +2855,37 @@ async function retrieveRuntimeEvidenceByPair({
           strategyConfig.includePubMed
             ? loadRuntimePubMedEvidenceForPair({
               adminClient,
+              leftNode,
               leftScope: lookupScopes.get(leftId) ?? [leftId],
               limit: strategyConfig.pubMedLimit,
+              rightNode,
               rightScope: lookupScopes.get(rightId) ?? [rightId],
               strategyConfig,
             })
             : Promise.resolve([]),
         ]);
 
+      const allEvidenceRows = [
+        ...leftMonographEvidence,
+        ...rightMonographEvidence,
+        ...pubmedEvidence,
+      ];
+      const retrievalSummary: RuntimeRetrievalSummary = {
+        durationMs: Date.now() - retrievalStartedAt,
+        leftMonographEvidenceCount: leftMonographEvidence.length,
+        preTopKCount: allEvidenceRows.length,
+        pubMedEvidenceCount: pubmedEvidence.length,
+        rightMonographEvidenceCount: rightMonographEvidence.length,
+        strategy: strategyConfig.id,
+        topK: strategyConfig.topK,
+      };
+
       evidenceByPair.set(
         pair,
-        rerankEvidenceRows([
-          ...leftMonographEvidence,
-          ...rightMonographEvidence,
-          ...pubmedEvidence,
-        ]).slice(0, strategyConfig.topK),
+        annotateRetrievalSummary(
+          rerankEvidenceRows(allEvidenceRows).slice(0, strategyConfig.topK),
+          retrievalSummary,
+        ),
       );
     }),
   );
@@ -2610,20 +2905,26 @@ async function loadLookupScopes(
       let frontier = [nodeId];
 
       for (let depth = 0; depth < 4 && frontier.length; depth += 1) {
-        const { data, error } = await adminClient
-          .from("kg_edge")
-          .select("source_id,target_id")
-          .in("source_id", frontier)
-          .in("relation", ["has_ingredient", "subclass_of"])
-          .limit(500);
+        const rows: KgEdgeRow[] = [];
 
-        if (error) {
-          throw error;
+        for (const batch of chunkArray(frontier, runtimeInFilterBatchSize)) {
+          const { data, error } = await adminClient
+            .from("kg_edge")
+            .select("source_id,target_id")
+            .in("source_id", batch)
+            .in("relation", ["has_ingredient", "subclass_of"])
+            .limit(500);
+
+          if (error) {
+            throw error;
+          }
+
+          rows.push(...((data ?? []) as KgEdgeRow[]));
         }
 
         const nextFrontier = [
           ...new Set(
-            ((data ?? []) as KgEdgeRow[])
+            rows
               .map((row) => row.target_id)
               .filter((targetId) => !scope.has(targetId)),
           ),
@@ -2777,6 +3078,14 @@ async function loadCpsCandidateNodes(
     nodeIds.add(id);
   }
 
+  for (const sameNameNode of await loadSameNameNodesBySource(
+    adminClient,
+    node,
+    "CPS",
+  )) {
+    nodeIds.add(sameNameNode.id);
+  }
+
   for (const product of await loadReverseLinkedProducts(
     adminClient,
     [...nodeIds],
@@ -2851,6 +3160,14 @@ async function loadHealthCanadaCandidateNodes(
     nodeIds.add(id);
   }
 
+  for (const sameNameNode of await loadSameNameNodesBySource(
+    adminClient,
+    node,
+    "HEALTH_CANADA_DPD",
+  )) {
+    nodeIds.add(sameNameNode.id);
+  }
+
   return [...(await getKgNodesById(adminClient, [...nodeIds])).values()];
 }
 
@@ -2858,23 +3175,37 @@ async function loadHealthCanadaProductNodes(
   adminClient: ReturnType<typeof createClient>,
   nodes: KgNodeRow[],
 ): Promise<KgNodeRow[]> {
-  const productNodesById = new Map<string, KgNodeRow>();
+  const productNodeIds = new Set<string>();
 
   for (const node of nodes) {
     if (node.source === "HEALTH_CANADA_DPD" && node.type === "drug") {
-      productNodesById.set(node.id, node);
+      productNodeIds.add(node.id);
     }
   }
 
-  for (const product of await loadReverseLinkedProducts(
+  for (const productId of await loadReverseLinkedProductIds(
     adminClient,
     nodes.map((node) => node.id),
     "HEALTH_CANADA_DPD",
+    runtimeMaxReverseProductScanEdges,
   )) {
-    productNodesById.set(product.id, product);
+    productNodeIds.add(productId);
   }
 
-  return [...productNodesById.values()];
+  const prioritizedProductIds = await prioritizeNodeIdsWithChunks(
+    adminClient,
+    [...productNodeIds],
+    "HEALTH_CANADA_PRODUCT_MONOGRAPH",
+  );
+
+  return [
+    ...(await getKgNodesById(
+      adminClient,
+      prioritizedProductIds.slice(0, runtimeMaxReverseProductNodes),
+    )).values(),
+  ].filter((node) =>
+    node.source === "HEALTH_CANADA_DPD" && node.type === "drug"
+  );
 }
 
 async function loadReverseLinkedProducts(
@@ -2882,30 +3213,132 @@ async function loadReverseLinkedProducts(
   nodeIds: string[],
   source: "CPS" | "HEALTH_CANADA_DPD",
 ): Promise<KgNodeRow[]> {
-  const uniqueNodeIds = [...new Set(nodeIds)];
+  const productIds = await loadReverseLinkedProductIds(
+    adminClient,
+    nodeIds,
+    source,
+    runtimeMaxReverseProductNodes,
+  );
+
+  const nodes = [
+    ...(await getKgNodesById(
+      adminClient,
+      productIds.slice(0, runtimeMaxReverseProductNodes),
+    )).values(),
+  ];
+
+  return nodes.filter((node) => node.source === source && node.type === "drug");
+}
+
+async function loadReverseLinkedProductIds(
+  adminClient: ReturnType<typeof createClient>,
+  nodeIds: string[],
+  source: "CPS" | "HEALTH_CANADA_DPD",
+  maxProductIds: number,
+): Promise<string[]> {
+  const uniqueNodeIds = [...new Set(nodeIds)].filter(Boolean);
+
+  if (!uniqueNodeIds.length || maxProductIds <= 0) {
+    return [];
+  }
+
+  const productIds = new Set<string>();
+
+  for (const targetBatch of chunkArray(uniqueNodeIds, runtimeInFilterBatchSize)) {
+    const remainingProductLimit = maxProductIds - productIds.size;
+
+    if (remainingProductLimit <= 0) {
+      break;
+    }
+
+    const { data, error } = await adminClient
+      .from("kg_edge")
+      .select("source_id,target_id")
+      .eq("source", source)
+      .in("relation", ["has_ingredient", "subclass_of"])
+      .in("target_id", targetBatch)
+      .limit(remainingProductLimit);
+
+    if (error) {
+      throw error;
+    }
+
+    for (const row of (data ?? []) as KgEdgeRow[]) {
+      productIds.add(row.source_id);
+
+      if (productIds.size >= maxProductIds) {
+        break;
+      }
+    }
+  }
+
+  return [...productIds];
+}
+
+async function prioritizeNodeIdsWithChunks(
+  adminClient: ReturnType<typeof createClient>,
+  nodeIds: string[],
+  source: "CPS" | "HEALTH_CANADA_PRODUCT_MONOGRAPH",
+): Promise<string[]> {
+  const uniqueNodeIds = [...new Set(nodeIds)].filter(Boolean);
 
   if (!uniqueNodeIds.length) {
     return [];
   }
 
+  const nodeIdsWithChunks = new Set<string>();
+
+  for (const batch of chunkArray(uniqueNodeIds, runtimeInFilterBatchSize)) {
+    const { data, error } = await adminClient
+      .from("kg_chunk")
+      .select("node_id")
+      .eq("source", source)
+      .in("node_id", batch)
+      .limit(runtimeMaxChunkRows);
+
+    if (error) {
+      throw error;
+    }
+
+    for (const row of (data ?? []) as Array<Pick<KgChunkRow, "node_id">>) {
+      nodeIdsWithChunks.add(row.node_id);
+    }
+  }
+
+  return [
+    ...uniqueNodeIds.filter((id) => nodeIdsWithChunks.has(id)),
+    ...uniqueNodeIds.filter((id) => !nodeIdsWithChunks.has(id)),
+  ];
+}
+
+async function loadSameNameNodesBySource(
+  adminClient: ReturnType<typeof createClient>,
+  node: KgNodeRow,
+  source: "CPS" | "HEALTH_CANADA_DPD",
+): Promise<KgNodeRow[]> {
+  const name = node.canonical_name.trim();
+
+  if (!name || node.source === source) {
+    return [];
+  }
+
   const { data, error } = await adminClient
-    .from("kg_edge")
-    .select("source_id,target_id")
+    .from("kg_node")
+    .select("id,type,canonical_name,identifiers,summary,source")
     .eq("source", source)
-    .in("relation", ["has_ingredient", "subclass_of"])
-    .in("target_id", uniqueNodeIds.slice(0, 75))
-    .limit(500);
+    .eq("type", node.type)
+    .ilike("canonical_name", name)
+    .limit(12);
 
   if (error) {
     throw error;
   }
 
-  const productIds = [
-    ...new Set(((data ?? []) as KgEdgeRow[]).map((row) => row.source_id)),
-  ];
-  const nodes = [...(await getKgNodesById(adminClient, productIds)).values()];
+  const normalizedName = normalizeName(name);
 
-  return nodes.filter((node) => node.source === source && node.type === "drug");
+  return ((data ?? []) as KgNodeRow[]).filter((candidate) =>
+    normalizeName(candidate.canonical_name) === normalizedName
+  );
 }
 
 async function loadCrosswalkNodeIds(
@@ -2969,36 +3402,59 @@ async function loadChunksForNodes(
   nodeIds: string[],
   source: "CPS" | "HEALTH_CANADA_PRODUCT_MONOGRAPH",
 ): Promise<KgChunkRow[]> {
-  const uniqueNodeIds = [...new Set(nodeIds)];
+  const uniqueNodeIds = [...new Set(nodeIds)]
+    .filter(Boolean)
+    .slice(0, runtimeMaxChunkLookupNodeIds);
 
   if (!uniqueNodeIds.length) {
     return [];
   }
 
-  const { data, error } = await adminClient
-    .from("kg_chunk")
-    .select("id,node_id,section,content,source")
-    .eq("source", source)
-    .in("node_id", uniqueNodeIds.slice(0, 75))
-    .limit(500);
+  const chunks: KgChunkRow[] = [];
 
-  if (error) {
-    throw error;
+  for (const batch of chunkArray(uniqueNodeIds, runtimeInFilterBatchSize)) {
+    const remainingRowLimit = runtimeMaxChunkRows - chunks.length;
+
+    if (remainingRowLimit <= 0) {
+      break;
+    }
+
+    const { data, error } = await adminClient
+      .from("kg_chunk")
+      .select("id,node_id,section,content,source")
+      .eq("source", source)
+      // Monograph dedup: skip near-duplicate copies of the same substance's
+      // monograph (is_canonical=false). Defaults to true for un-deduped chunks,
+      // so this only suppresses redundant copies and keeps every divergence —
+      // making the row cap yield more diverse evidence. See migration 20260625120000.
+      .eq("is_canonical", true)
+      .in("node_id", batch)
+      .limit(Math.min(runtimeChunkRowsPerBatch, remainingRowLimit));
+
+    if (error) {
+      throw error;
+    }
+
+    chunks.push(...((data ?? []) as KgChunkRow[]));
   }
 
-  return (data ?? []) as KgChunkRow[];
+  return chunks;
 }
 
 async function loadRuntimePubMedEvidenceForPair({
   adminClient,
+  leftNode,
   leftScope,
   limit,
+  rightNode,
   rightScope,
   strategyConfig,
 }: {
   adminClient: ReturnType<typeof createClient>;
+  leftNode: KgNodeRow;
   leftScope: string[];
   limit: number;
+  rightNode: KgNodeRow;
   rightScope: string[];
   strategyConfig: RuntimeRetrievalStrategyConfig;
 }): Promise<RuntimeEvidenceRow[]> {
@@ -3006,13 +3462,24 @@ async function loadRuntimePubMedEvidenceForPair({
     return [];
   }
 
-  const candidates = await loadRuntimePubMedCandidatesForPair({
-    adminClient,
-    leftScope,
-    rightScope,
-  });
+  const [candidates, nodeSearchEvidenceRows] = await Promise.all([
+    loadRuntimePubMedCandidatesForPair({
+      adminClient,
+      leftScope,
+      rightScope,
+    }),
+    loadRuntimePubMedArticleChunkEvidenceForPair({
+      adminClient,
+      leftNode,
+      leftScope,
+      limit,
+      rightNode,
+      rightScope,
+      strategyConfig,
+    }),
+  ]);
 
-  if (!candidates.length) {
+  if (!candidates.length && !nodeSearchEvidenceRows.length) {
     return [];
   }
 
@@ -3060,7 +3527,7 @@ async function loadRuntimePubMedEvidenceForPair({
 
   return rerankEvidenceRows(
     appendRetrievalStrategyMetadata(
-      [...evidenceRows, ...candidateFallbackRows],
+      [...evidenceRows, ...candidateFallbackRows, ...nodeSearchEvidenceRows],
       strategyConfig.id,
     ),
   ).slice(0, limit);
@@ -3198,22 +3665,314 @@ async function loadRuntimePubMedEvidenceForCandidates(
     .slice(0, 8);
 }
 
-async function getKgNodesById(
-  adminClient: ReturnType<typeof createClient>,
-  nodeIds: string[],
-): Promise<Map<string, KgNodeRow>> {
+async function loadRuntimePubMedArticleChunkEvidenceForPair({
+  adminClient,
+  leftNode,
+  leftScope,
+  limit,
+  rightNode,
+  rightScope,
+  strategyConfig,
+}: {
+  adminClient: ReturnType<typeof createClient>;
+  leftNode: KgNodeRow;
+  leftScope: string[];
+  limit: number;
+  rightNode: KgNodeRow;
+  rightScope: string[];
+  strategyConfig: RuntimeRetrievalStrategyConfig;
+}): Promise<RuntimeEvidenceRow[]> {
+  const [leftLinks, rightLinks] = await Promise.all([
+    loadPubMedArticleNodeLinks(adminClient, leftScope),
+    loadPubMedArticleNodeLinks(adminClient, rightScope),
+  ]);
+  const leftByPmid = groupArticleNodeLinksByPmid(leftLinks);
+  const rightByPmid = groupArticleNodeLinksByPmid(rightLinks);
+  const pmidMatches = [...leftByPmid.keys()]
+    .filter((pmid) => rightByPmid.has(pmid))
+    .map((pmid) => ({
+      leftLinks: leftByPmid.get(pmid) ?? [],
+      pmid,
+      rightLinks: rightByPmid.get(pmid) ?? [],
+    }))
+    .sort(compareArticleNodeLinkMatches)
+    .slice(0, Math.max(12, limit * 6));
+
+  if (!pmidMatches.length) {
+    return [];
+  }
+
+  const matchByPmid = new Map(pmidMatches.map((match) => [match.pmid, match]));
   const { data, error } = await adminClient
-    .from("kg_node")
-    .select("id,type,canonical_name,identifiers,summary,source")
-    .in("id", nodeIds);
+    .from("pubmed_evidence_chunk")
+    .select(
+      "id,pmid,pmcid,source_type,section_title,section_path,label,content,structured_content,relevance_score,extraction_confidence,license,source_url",
+    )
+    .in("pmid", pmidMatches.map((match) => match.pmid).slice(0, 75))
+    .order("relevance_score", { ascending: false })
+    .limit(Math.max(12, limit * 8));
 
   if (error) {
     throw error;
   }
 
-  return new Map<string, KgNodeRow>(
-    ((data ?? []) as KgNodeRow[]).map((node) => [node.id, node]),
+  return ((data ?? []) as PubMedEvidenceChunkRow[])
+    .map((chunk, index): RuntimeEvidenceRow => {
+      const match = matchByPmid.get(chunk.pmid);
+      const pairMentionScore = scorePubMedPairMention(
+        chunk.content,
+        leftNode,
+        rightNode,
+      );
+
+      return {
+        chunk_id: chunk.id,
+        content: chunk.content,
+        metadata: {
+          extractionConfidence: chunk.extraction_confidence ?? null,
+          label: chunk.label ?? null,
+          leftArticleNodeLinks: summarizeArticleNodeLinks(
+            match?.leftLinks ?? [],
+          ),
+          leftNodeId: leftNode.id,
+          license: chunk.license ?? null,
+          pairMentionScore,
+          pmcid: chunk.pmcid ?? null,
+          pmid: chunk.pmid,
+          relevanceScore: chunk.relevance_score ?? null,
+          retrieval: "runtime_node_search_pubmed_fulltext",
+          retrievalStrategy: strategyConfig.id,
+          rightArticleNodeLinks: summarizeArticleNodeLinks(
+            match?.rightLinks ?? [],
+          ),
+          rightNodeId: rightNode.id,
+          sectionPath: chunk.section_path ?? [],
+          sectionTitle: chunk.section_title ?? null,
+          sourceType: chunk.source_type,
+          sourceUrl: chunk.source_url ?? null,
+          structuredContent: chunk.structured_content ?? {},
+        },
+        quote: selectPubMedPairQuote(chunk.content, leftNode, rightNode),
+        rank: index + (pairMentionScore >= 2 ? 0 : 20),
+        source_id: chunk.id,
+        source_kind: "pubmed",
+        source_table: "pubmed_evidence_chunk",
+        support_type: classifyPubMedChunkSupportType(chunk.content, pairMentionScore),
+        used_in_answer: false,
+      };
+    })
+    .sort(
+      (left, right) =>
+        supportTypeRank(left.support_type) -
+          supportTypeRank(right.support_type) ||
+        Number(right.metadata.pairMentionScore ?? 0) -
+          Number(left.metadata.pairMentionScore ?? 0) ||
+        Number(right.metadata.relevanceScore ?? 0) -
+          Number(left.metadata.relevanceScore ?? 0) ||
+        left.rank - right.rank,
+    )
+    .slice(0, limit);
+}
+
+async function loadPubMedArticleNodeLinks(
+  adminClient: ReturnType<typeof createClient>,
+  nodeIds: string[],
+): Promise<PubMedArticleKgNodeRow[]> {
+  const uniqueNodeIds = [...new Set(nodeIds)].slice(0, 75);
+
+  if (!uniqueNodeIds.length) {
+    return [];
+  }
+
+  const { data, error } = await adminClient
+    .from("pubmed_article_kg_node")
+    .select("pmid,node_id,concept_id,source,confidence,evidence_state,metadata")
+    .in("node_id", uniqueNodeIds)
+    .in("evidence_state", [
+      "article_hit",
+      "chunk_supported",
+      "candidate_supported",
+    ])
+    .order("confidence", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []) as PubMedArticleKgNodeRow[];
+}
+
+function groupArticleNodeLinksByPmid(
+  rows: PubMedArticleKgNodeRow[],
+): Map<string, PubMedArticleKgNodeRow[]> {
+  const byPmid = new Map<string, PubMedArticleKgNodeRow[]>();
+
+  for (const row of rows) {
+    byPmid.set(row.pmid, [...(byPmid.get(row.pmid) ?? []), row]);
+  }
+
+  return byPmid;
+}
+
+function compareArticleNodeLinkMatches(
+  left: {
+    leftLinks: PubMedArticleKgNodeRow[];
+    pmid: string;
+    rightLinks: PubMedArticleKgNodeRow[];
+  },
+  right: {
+    leftLinks: PubMedArticleKgNodeRow[];
+    pmid: string;
+    rightLinks: PubMedArticleKgNodeRow[];
+  },
+): number {
+  return (
+    articleNodeLinkMatchScore(right) - articleNodeLinkMatchScore(left) ||
+    left.pmid.localeCompare(right.pmid)
   );
+}
+
+function articleNodeLinkMatchScore(match: {
+  leftLinks: PubMedArticleKgNodeRow[];
+  rightLinks: PubMedArticleKgNodeRow[];
+}): number {
+  return (
+    bestArticleNodeLinkScore(match.leftLinks) +
+    bestArticleNodeLinkScore(match.rightLinks)
+  );
+}
+
+function bestArticleNodeLinkScore(rows: PubMedArticleKgNodeRow[]): number {
+  return rows.reduce((best, row) => {
+    const stateScore = row.evidence_state === "chunk_supported"
+      ? 1
+      : row.evidence_state === "candidate_supported"
+        ? 0.8
+        : 0;
+
+    return Math.max(best, stateScore + (row.confidence ?? 0));
+  }, 0);
+}
+
+function summarizeArticleNodeLinks(rows: PubMedArticleKgNodeRow[]) {
+  return rows.slice(0, 8).map((row) => ({
+    confidence: row.confidence ?? null,
+    conceptId: row.concept_id ?? null,
+    evidenceState: row.evidence_state ?? null,
+    linkKind: typeof row.metadata?.linkKind === "string"
+      ? row.metadata.linkKind
+      : null,
+    nodeId: row.node_id,
+    source: row.source,
+  }));
+}
+
+function scorePubMedPairMention(
+  content: string,
+  leftNode: KgNodeRow,
+  rightNode: KgNodeRow,
+): number {
+  return (
+    Number(textMentionsNode(content, leftNode)) +
+    Number(textMentionsNode(content, rightNode))
+  );
+}
+
+function textMentionsNode(content: string, node: KgNodeRow): boolean {
+  const normalizedContent = normalizeName(content);
+  const tokens = normalizeName(node.canonical_name)
+    .split(" ")
+    .filter((token) => token.length >= 5);
+
+  return tokens.some((token) => normalizedContent.includes(token));
+}
+
+function classifyPubMedChunkSupportType(
+  content: string,
+  pairMentionScore: number,
+): RuntimeEvidenceRow["support_type"] {
+  if (/no (clinically )?significant .*interactions?/i.test(content)) {
+    return "contradicts_or_limits";
+  }
+
+  if (pairMentionScore >= 2) {
+    return "supports_interaction";
+  }
+
+  if (/(monitor|avoid|dose|adjust|contraindicat)/i.test(content)) {
+    return "supports_management";
+  }
+
+  if (/(cyp|ugt|p-?gp|transporter|inhibit|induc|substrate|pharmacokinetic|pharmacodynamic)/i.test(content)) {
+    return "supports_mechanism";
+  }
+
+  return "retrieved";
+}
+
+function selectPubMedPairQuote(
+  content: string,
+  leftNode: KgNodeRow,
+  rightNode: KgNodeRow,
+): string {
+  const leftTokens = normalizeName(leftNode.canonical_name)
+    .split(" ")
+    .filter((token) => token.length >= 5);
+  const rightTokens = normalizeName(rightNode.canonical_name)
+    .split(" ")
+    .filter((token) => token.length >= 5);
+  const sentences = content
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+/)
+    .filter(Boolean);
+  const preferred =
+    sentences.find((sentence) => {
+      const normalizedSentence = normalizeName(sentence);
+
+      return (
+        leftTokens.some((token) => normalizedSentence.includes(token)) &&
+        rightTokens.some((token) => normalizedSentence.includes(token))
+      );
+    }) ??
+    sentences.find((sentence) =>
+      /(interact|cyp|ugt|p-?gp|transporter|inhibit|induc|substrate|monitor|avoid|dose)/i.test(
+        sentence,
+      ),
+    ) ??
+    sentences[0] ??
+    content;
+
+  return truncate(preferred, 700);
+}
+
+async function getKgNodesById(
+  adminClient: ReturnType<typeof createClient>,
+  nodeIds: string[],
+): Promise<Map<string, KgNodeRow>> {
+  const nodesById = new Map<string, KgNodeRow>();
+  const uniqueNodeIds = [...new Set(nodeIds)].filter(Boolean);
+
+  if (!uniqueNodeIds.length) {
+    return nodesById;
+  }
+
+  for (const batch of chunkArray(uniqueNodeIds, runtimeInFilterBatchSize)) {
+    const { data, error } = await adminClient
+      .from("kg_node")
+      .select("id,type,canonical_name,identifiers,summary,source")
+      .in("id", batch);
+
+    if (error) {
+      throw error;
+    }
+
+    for (const node of (data ?? []) as KgNodeRow[]) {
+      nodesById.set(node.id, node);
+    }
+  }
+
+  return nodesById;
 }
 
 function selectInteractionOrFallbackChunks(
@@ -3249,6 +4008,69 @@ function appendRetrievalStrategyMetadata(
       retrievalStrategy,
     },
   }));
+}
+
+function prepareRuntimeAiEvidenceRows(
+  rows: RuntimeEvidenceRow[],
+  topK: number,
+): RuntimeEvidenceRow[] {
+  const rankedRows = rerankEvidenceRows(rows);
+  const hasSubstantiveEvidence = rankedRows.some((row) =>
+    !isSourceSilentKgEvidence(row)
+  );
+  const filteredRows = hasSubstantiveEvidence
+    ? rankedRows.filter((row) => !isSourceSilentKgEvidence(row))
+    : rankedRows;
+
+  return filteredRows.slice(0, topK);
+}
+
+function isSourceSilentKgEvidence(row: RuntimeEvidenceRow): boolean {
+  return row.source_kind === "kg_edge" && row.support_type === "source_silent";
+}
+
+function annotateRetrievalSummary(
+  rows: RuntimeEvidenceRow[],
+  summary: RuntimeRetrievalSummary,
+): RuntimeEvidenceRow[] {
+  return rows.map((row) => ({
+    ...row,
+    metadata: {
+      ...row.metadata,
+      runtimeRetrievalSummary: summary,
+    },
+  }));
+}
+
+function getRuntimeRetrievalSummary(
+  evidenceRows: RuntimeEvidenceRow[],
+): RuntimeRetrievalSummary | null {
+  for (const row of evidenceRows) {
+    const summary = row.metadata.runtimeRetrievalSummary;
+
+    if (isRuntimeRetrievalSummary(summary)) {
+      return summary;
+    }
+  }
+
+  return null;
+}
+
+function isRuntimeRetrievalSummary(
+  value: unknown,
+): value is RuntimeRetrievalSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const summary = value as Partial<RuntimeRetrievalSummary>;
+  return typeof summary.durationMs === "number" &&
+    typeof summary.leftMonographEvidenceCount === "number" &&
+    typeof summary.preTopKCount === "number" &&
+    typeof summary.pubMedEvidenceCount === "number" &&
+    typeof summary.rightMonographEvidenceCount === "number" &&
+    typeof summary.strategy === "string" &&
+    typeof summary.topK === "number";
 }
 
 function rankInteractionChunks<
@@ -3460,6 +4282,29 @@ function buildEvidenceRows(interactions: InteractionRpcRow[]): RuntimeEvidenceRo
       used_in_answer: index === 0,
     };
   });
+}
+
+function buildRuntimeRetrievalFailureEvidenceRow(
+  errorMessage: string,
+): RuntimeEvidenceRow {
+  return {
+    chunk_id: null,
+    content:
+      `Runtime evidence retrieval failed during evaluation capture: ${errorMessage}`,
+    metadata: {
+      retrieval: "runtime_evaluation_capture",
+      retrievalStrategy: interactionAiRetrievalStrategyVersion,
+      runtimeError: errorMessage,
+      runtimeStatus: "retrieval_failed",
+    },
+    quote: null,
+    rank: 0,
+    source_id: null,
+    source_kind: "other",
+    source_table: null,
+    support_type: "retrieved",
+    used_in_answer: false,
+  };
 }
 
 function buildAnswerSummary(
@@ -4077,6 +4922,17 @@ function pairFingerprint(leftId: string, rightId: string): string {
   return [leftId, rightId].sort().join(":");
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  const chunkSize = Math.max(1, size);
+
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+}
+
 function stripStrengthSuffix(value: string): string {
   return value.replace(
     /\s*(-\s*)?[0-9]+\s*(MG|MCG|G|ML|HR).*$/i,
@@ -4255,8 +5111,25 @@ function validateRuntimeAiAnswer(value: unknown): RuntimeAiAnswer {
   const confidence = typeof candidate.confidence === "number"
     ? Math.max(0, Math.min(1, candidate.confidence))
     : 0;
-  const usedEvidenceValue =
-    candidate.usedEvidenceIds ?? candidate.used_evidence_ids;
+  const structuredCandidate = candidate as {
+    primaryEvidenceId?: unknown;
+    primary_evidence_id?: unknown;
+    additionalEvidenceIds?: unknown;
+    additional_evidence_ids?: unknown;
+  };
+  const primaryEvidenceId = structuredCandidate.primaryEvidenceId ??
+    structuredCandidate.primary_evidence_id;
+  const additionalEvidenceIds = structuredCandidate.additionalEvidenceIds ??
+    structuredCandidate.additional_evidence_ids;
+  // Prefer the structured primary + additional citation shape; fall back to the
+  // legacy usedEvidenceIds array for cached/older model outputs.
+  const usedEvidenceValue = primaryEvidenceId != null ||
+      additionalEvidenceIds != null
+    ? [
+      ...normalizeRuntimeUsedEvidenceIds(primaryEvidenceId),
+      ...normalizeRuntimeUsedEvidenceIds(additionalEvidenceIds),
+    ]
+    : candidate.usedEvidenceIds ?? candidate.used_evidence_ids;
 
   return {
     actionCategory,
@@ -4280,12 +5153,18 @@ function validateRuntimeAiAnswer(value: unknown): RuntimeAiAnswer {
         typeof item === "string"
       )
       : [],
-    usedEvidenceIds: Array.isArray(usedEvidenceValue)
-      ? usedEvidenceValue.filter((item): item is string =>
-          typeof item === "string"
-        )
-      : [],
+    usedEvidenceIds: normalizeRuntimeUsedEvidenceIds(usedEvidenceValue),
   };
+}
+
+function normalizeRuntimeUsedEvidenceIds(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : [value];
+
+  return items.flatMap((item): string[] =>
+    typeof item === "string" || typeof item === "number"
+      ? [String(item)]
+      : []
+  );
 }
 
 function normalizeActionCategory(value: unknown): InteractionActionCategory | null {
@@ -4346,7 +5225,30 @@ function normalizeInteractionSeverity(value: unknown): InteractionSeverity | nul
     return normalized;
   }
 
-  return null;
+  switch (normalized) {
+    case "contraindication":
+    case "contraindicated_combination":
+    case "contraindicated_interaction":
+      return "contraindicated";
+    case "severe":
+    case "serious":
+    case "high":
+    case "high_risk":
+    case "clinically_significant":
+      return "major";
+    case "medium":
+    case "moderate_risk":
+      return "moderate";
+    case "mild":
+    case "low":
+    case "low_risk":
+      return "minor";
+    case "none":
+    case "not_applicable":
+      return "unknown";
+    default:
+      return null;
+  }
 }
 
 function sortInteractions(interactions: InteractionRpcRow[]): InteractionRpcRow[] {

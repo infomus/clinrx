@@ -226,9 +226,26 @@ async function main() {
     });
     if (!r.ok) throw new Error(`stage insert ${r.status}: ${(await r.text()).slice(0, 200)}`);
   }
-  const applied = await fetch(`${url}/rest/v1/rpc/apply_kg_chunk_dedup`, { method: "POST", headers: H, body: "{}" });
-  if (!applied.ok) throw new Error(`apply ${applied.status}: ${(await applied.text()).slice(0, 200)}`);
-  console.log(`applied dedup to ${await applied.text()} chunks`);
+  // The apply UPDATE can exceed the PostgREST gateway HTTP timeout on a large
+  // staging set (it keeps running server-side and completes). Tolerate the 504 by
+  // polling the applied count until it reaches the staged count.
+  const expected = allStage.length;
+  const applied = await fetch(`${url}/rest/v1/rpc/apply_kg_chunk_dedup`, { method: "POST", headers: H, body: "{}" }).catch(() => null);
+  if (applied && applied.ok) {
+    console.log(`applied dedup to ${await applied.text()} chunks`);
+  } else {
+    console.log(`apply HTTP returned ${applied ? applied.status : "error"}; polling server-side completion...`);
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const r = await fetch(`${url}/rest/v1/kg_chunk?dedup_substance_id=not.is.null&select=id&limit=1`, { headers: { ...H, Prefer: "count=exact" } });
+      const n = Number((r.headers.get("content-range") || "/0").split("/")[1]);
+      if (n >= expected) {
+        console.log(`applied dedup to ${n} chunks (verified)`);
+        break;
+      }
+      if (i === 59) console.log(`still ${n}/${expected} applied after polling — verify manually`);
+    }
+  }
 }
 
 main().catch((e) => {
