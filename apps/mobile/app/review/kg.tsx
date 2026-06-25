@@ -16,7 +16,10 @@ import {
   getKgExplorerEdges,
   getKgNodeChunks,
   getKgNodeChunkStats,
+  getPdInteractions,
+  getPkInteractions,
   getPkStrengthQueue,
+  getQtInteractions,
   gradePkStrengthEdge,
   type KgMoietyGroup,
   type PkStrengthEdge,
@@ -820,6 +823,160 @@ function KgExplorerContent() {
 
 const CHUNK_PAGE = 15;
 
+const magnitudeStyle: Record<string, string> = {
+  high: "bg-red-100 text-red-700",
+  moderate: "bg-amber-100 text-amber-700",
+  low: "bg-yellow-100 text-yellow-700",
+};
+const qtTierStyle: Record<string, string> = {
+  known: "bg-red-100 text-red-700",
+  possible: "bg-amber-100 text-amber-700",
+  conditional: "bg-yellow-100 text-yellow-700",
+};
+
+function MechanismPanel({ nodeId }: { nodeId: string }) {
+  const pk = useQuery({
+    queryKey: ["mech-pk", nodeId],
+    queryFn: () => getPkInteractions(supabase, reviewPassword, nodeId),
+  });
+  const qt = useQuery({
+    queryKey: ["mech-qt", nodeId],
+    queryFn: () => getQtInteractions(supabase, reviewPassword, nodeId),
+  });
+  const pd = useQuery({
+    queryKey: ["mech-pd", nodeId],
+    queryFn: () => getPdInteractions(supabase, reviewPassword, nodeId),
+  });
+  const pkRows = pk.data ?? [];
+  const affectedBy = pkRows.filter((r) => r.role === "affected_by");
+  const affects = pkRows.filter((r) => r.role === "affects");
+  const qtInfo = qt.data;
+  const pdAxes = pd.data ?? [];
+  const loading = pk.isLoading || qt.isLoading || pd.isLoading;
+  const hasAny = pkRows.length || qtInfo?.isQtAgent || pdAxes.length;
+  const names = (rows: typeof pkRows, n: number) =>
+    rows
+      .slice(0, n)
+      .map((r) => `${r.counterpartName} (${r.enzyme})`)
+      .join(", ") + (rows.length > n ? ` +${rows.length - n}` : "");
+
+  return (
+    <View className="mt-4 rounded-lg border border-ink/10 bg-white p-3">
+      <Text className="text-sm font-semibold text-ink">
+        Mechanism interactions
+      </Text>
+      <Text className="mt-1 text-xs leading-5 text-ink/60">
+        Derived PK (CYP), QT, and PD axes — all candidate, pending pharmacist
+        review.
+      </Text>
+      {loading ? (
+        <ActivityIndicator className="mt-3" />
+      ) : !hasAny ? (
+        <Text className="mt-2 text-xs text-ink/50">
+          No derived mechanism data for this node.
+        </Text>
+      ) : (
+        <View className="mt-3 gap-3">
+          {pkRows.length ? (
+            <View>
+              <Text className="text-xs font-semibold uppercase text-ink/50">
+                Pharmacokinetic (CYP)
+              </Text>
+              {affectedBy.length ? (
+                <Text className="mt-1 text-xs leading-5 text-ink/70">
+                  Substrate — exposure altered by {affectedBy.length}{" "}
+                  modulator(s): {names(affectedBy, 4)}
+                </Text>
+              ) : null}
+              {affects.length ? (
+                <Text className="mt-1 text-xs leading-5 text-ink/70">
+                  Modulator — alters exposure of {affects.length} substrate(s):{" "}
+                  {names(affects, 4)}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          {qtInfo?.isQtAgent ? (
+            <View>
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Text className="text-xs font-semibold uppercase text-ink/50">
+                  QT prolongation
+                </Text>
+                <Pill
+                  style={
+                    qtTierStyle[qtInfo.classification?.riskTier ?? ""] ??
+                    "bg-mist text-ink/60"
+                  }
+                  text={qtInfo.classification?.riskTier ?? "?"}
+                />
+                <Pill
+                  style={
+                    statusStyles[qtInfo.classification?.reviewStatus ?? ""] ??
+                    "bg-mist text-ink/60"
+                  }
+                  text={qtInfo.classification?.reviewStatus ?? ""}
+                />
+              </View>
+              {qtInfo.classification?.quote ? (
+                <Text className="mt-1 text-xs italic leading-5 text-ink/70">
+                  “{qtInfo.classification.quote}”
+                </Text>
+              ) : null}
+              <Text className="mt-1 text-xs text-ink/60">
+                {qtInfo.partnersBySeverity
+                  .map((p) => `${p.partners} ${p.severity}`)
+                  .join(" · ")}{" "}
+                co-prolonger pairs
+              </Text>
+            </View>
+          ) : null}
+
+          {pdAxes.length ? (
+            <View>
+              <Text className="text-xs font-semibold uppercase text-ink/50">
+                Pharmacodynamic
+              </Text>
+              <View className="mt-1 gap-1">
+                {pdAxes.map((a) => (
+                  <View
+                    className="rounded-md border border-ink/10 bg-mist px-2 py-1.5"
+                    key={a.axis}
+                  >
+                    <View className="flex-row flex-wrap items-center gap-2">
+                      <Text className="text-xs font-semibold text-ink">
+                        {a.axisName}
+                      </Text>
+                      <Pill
+                        style={
+                          magnitudeStyle[a.magnitude] ?? "bg-mist text-ink/60"
+                        }
+                        text={a.magnitude}
+                      />
+                      <Tag>{a.partners} partners</Tag>
+                      <Pill
+                        style={
+                          statusStyles[a.reviewStatus] ?? "bg-mist text-ink/60"
+                        }
+                        text={a.reviewStatus}
+                      />
+                    </View>
+                    {a.quote ? (
+                      <Text className="mt-1 text-[11px] italic leading-4 text-ink/60">
+                        “{a.quote.slice(0, 160)}”
+                      </Text>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            </View>
+          ) : null}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function KgNodeDrawer({
   node,
   onClose,
@@ -908,6 +1065,8 @@ function KgNodeDrawer({
 
         <ScrollView className="flex-1 px-4 py-3">
           <NodeInspector node={node} />
+
+          <MechanismPanel nodeId={node.id} />
 
           <View className="mt-4 rounded-lg border border-ink/10 bg-white p-3">
             <Text className="text-sm font-semibold text-ink">

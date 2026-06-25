@@ -442,6 +442,120 @@ export async function gradePkStrengthEdge(
   };
 }
 
+// --- Mechanism-derived interactions (PK / QT / PD) for the node drawer ---------
+
+export interface PkInteractionRow {
+  role: "affected_by" | "affects";
+  counterpartId: string;
+  counterpartName: string;
+  enzyme: string;
+  mechanism: string;
+  modulatorStrength: string | null;
+  effect: string;
+  severity: string;
+}
+
+export async function getPkInteractions(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  nodeId: string,
+): Promise<PkInteractionRow[]> {
+  const { data, error } = await client.rpc("kg_explorer_pk_interactions", {
+    p_passcode: passcode,
+    p_node_id: nodeId,
+  });
+  if (error) throw error;
+  return ((data as Record<string, unknown>[] | null) ?? []).map((r) => ({
+    role: r.role as "affected_by" | "affects",
+    counterpartId: r.counterpart_id as string,
+    counterpartName: r.counterpart_name as string,
+    enzyme: r.enzyme as string,
+    mechanism: r.mechanism as string,
+    modulatorStrength: (r.modulator_strength as string | null) ?? null,
+    effect: r.effect as string,
+    severity: r.severity as string,
+  }));
+}
+
+export interface QtInteractionInfo {
+  isQtAgent: boolean;
+  classification?: {
+    riskTier: string;
+    rationale: string | null;
+    quote: string | null;
+    reviewStatus: string;
+    extractionConfidence: number | null;
+  };
+  partnersBySeverity: Array<{ severity: string; partners: number }>;
+}
+
+export async function getQtInteractions(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  nodeId: string,
+): Promise<QtInteractionInfo> {
+  const { data, error } = await client.rpc("kg_explorer_qt_interactions", {
+    p_passcode: passcode,
+    p_node_id: nodeId,
+  });
+  if (error) throw error;
+  const row = (data as Record<string, unknown> | null) ?? {};
+  const c = row.classification as Record<string, unknown> | undefined;
+  return {
+    isQtAgent: Boolean(row.is_qt_agent),
+    ...(c
+      ? {
+          classification: {
+            riskTier: c.risk_tier as string,
+            rationale: (c.rationale as string | null) ?? null,
+            quote: (c.quote as string | null) ?? null,
+            reviewStatus: c.review_status as string,
+            extractionConfidence:
+              c.extraction_confidence == null
+                ? null
+                : Number(c.extraction_confidence),
+          },
+        }
+      : {}),
+    partnersBySeverity: (
+      (row.partners_by_severity as Record<string, unknown>[] | null) ?? []
+    ).map((p) => ({
+      severity: p.severity as string,
+      partners: Number(p.partners ?? 0),
+    })),
+  };
+}
+
+export interface PdAxisRow {
+  axis: string;
+  axisName: string;
+  magnitude: string;
+  quote: string | null;
+  reviewStatus: string;
+  partners: number;
+}
+
+export async function getPdInteractions(
+  client: ClinRxSupabaseClient,
+  passcode: string,
+  nodeId: string,
+): Promise<PdAxisRow[]> {
+  const { data, error } = await client.rpc("kg_explorer_pd_interactions", {
+    p_passcode: passcode,
+    p_node_id: nodeId,
+  });
+  if (error) throw error;
+  const row = (data as Record<string, unknown> | null) ?? {};
+  return ((row.axes as Record<string, unknown>[] | null) ?? []).map((a) => ({
+    axis: a.axis as string,
+    axisName: a.axis_name as string,
+    magnitude: a.magnitude as string,
+    quote: (a.quote as string | null) ?? null,
+    reviewStatus: a.review_status as string,
+    partners: Number(a.partners ?? 0),
+  }));
+}
+
 export async function getKgExplorerEdges(
   client: ClinRxSupabaseClient,
   passcode: string,
