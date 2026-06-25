@@ -12,7 +12,8 @@
 
 const U=process.env.U,KEY=process.env.K;const H={apikey:KEY,Authorization:'Bearer '+KEY,'content-type':'application/json'};
 const page=async b=>{const o=[];for(let off=0;;off+=1000){const r=await fetch(U+'/'+b+'&limit=1000&offset='+off,{headers:H});const d=await r.json();if(!Array.isArray(d)||!d.length)break;o.push(...d);if(d.length<1000)break;}return o;};
-const SALT=new Set("SODIUM POTASSIUM CALCIUM MAGNESIUM HYDROCHLORIDE HCL HYDROBROMIDE BROMIDE CHLORIDE SULFATE SULPHATE MESYLATE MALEATE TARTRATE BITARTRATE CITRATE PHOSPHATE ACETATE SUCCINATE FUMARATE BESYLATE BESILATE NITRATE OXALATE PAMOATE DECANOATE HYDRATE DIHYDRATE MONOHYDRATE ANHYDROUS DISODIUM TROMETHAMINE MEGLUMINE HEMIFUMARATE".split(" "));
+const SALT=new Set(("SODIUM POTASSIUM CALCIUM MAGNESIUM HYDROCHLORIDE HCL HYDROBROMIDE BROMIDE CHLORIDE SULFATE SULPHATE MESYLATE MALEATE TARTRATE BITARTRATE CITRATE PHOSPHATE ACETATE SUCCINATE FUMARATE BESYLATE BESILATE NITRATE OXALATE PAMOATE DECANOATE HYDRATE DIHYDRATE MONOHYDRATE ANHYDROUS DISODIUM TROMETHAMINE MEGLUMINE HEMIFUMARATE "+
+  "FUROATE PROPIONATE VALERATE DIPROPIONATE ENANTHATE CYPIONATE PIVALATE CAPROATE UNDECYLENATE UNDECANOATE PHENYLPROPIONATE ISOBUTYRATE BUTYRATE HEPTANOATE PALMITATE STEARATE XINAFOATE EMBONATE").split(" "));
 const base=n=>{let s=(n||"").toUpperCase().replace(/\(.*?\)/g," ").replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim();const t=s.split(" ").filter(Boolean);while(t.length>1&&SALT.has(t[t.length-1]))t.pop();return t.join(" ");};
 const atcOf=n=>{const a=n.identifiers&&n.identifiers.atc;if(!a)return null;return Array.isArray(a)?a[0]:a;};
 // deferred mineral/vitamin track (plan: ambiguous, handle separately)
